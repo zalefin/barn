@@ -1,0 +1,9 @@
+# Example inputs. Pass a per-account copy with -var-file.
+region       = "us-east-1"
+account_name = "personal"
+
+vpc_mode = "create"
+azs      = ["us-east-1a", "us-east-1b"]
+
+developer_role_mode    = "create"
+trusted_principal_arns = ["arn:aws:iam::123456789012:user/you"]

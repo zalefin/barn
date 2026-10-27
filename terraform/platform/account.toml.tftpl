@@ -1,0 +1,16 @@
+# Written from the terraform/platform output "account_file". Do not edit by hand.
+name = "${name}"
+region = "${region}"
+state_bucket = "${state_bucket}"
+developer_role_arn = "${developer_role_arn}"
+developer_policy_role_arn = "${developer_policy_role_arn}"
+execution_instance_profile = "${execution_instance_profile}"
+security_group_id = "${security_group_id}"
+subnet_ids = ${jsonencode(subnet_ids)}
+ami_ssm_parameter = "${ami_ssm_parameter}"
+kms_key_id = "${kms_key_id}"
+
+[extra_tags]
+%{ for k, v in extra_tags ~}
+${jsonencode(k)} = ${jsonencode(v)}
+%{ endfor ~}

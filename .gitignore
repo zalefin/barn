@@ -1,0 +1,8 @@
+home.local/
+.agent-platform.local.toml
+.state/
+.venv/
+*.tfstate*
+.terraform/
+__pycache__/
+.pytest_cache/

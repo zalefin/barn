@@ -1,0 +1,9 @@
+# Copy to .agent-platform.local.toml (gitignored) and edit.
+account = "personal"              # selects accounts/<account>.toml
+aws_profile = "my-profile"        # your own AWS CLI profile (source profile)
+user = "zach"                     # owner tag and env prefix (ssh zach-dev); default $USER
+ssh_public_key = "~/.ssh/id_ed25519.pub"
+default_size = "m7i.xlarge"       # 4 vCPU, 16 GiB
+passwordless_sudo = true
+idle_hours = 4
+volume_gb = 100
