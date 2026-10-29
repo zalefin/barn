@@ -13,6 +13,8 @@ from pathlib import Path
 BOX_USER = "ubuntu"
 ENV_NAME = re.compile(r"^[a-z][a-z0-9-]{0,20}$")
 UBUNTU_AMI = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+# What `barn init` writes for values only the user can know.
+PLACEHOLDER = "CHANGE-ME"
 
 
 class ConfigError(Exception):
@@ -66,6 +68,13 @@ class Settings:
         return Path(self.shared_home).expanduser() if self.shared_home else None
 
 
+def placeholders(data):
+    """Keys whose value (or any list item) is still a `barn init` placeholder."""
+    return [
+        k for k, v in data.items() if PLACEHOLDER in (v if isinstance(v, list) else [v] if isinstance(v, str) else [])
+    ]
+
+
 def _build(cls, path, data, **fixed):
     fields = {f.name: f for f in dataclasses.fields(cls)}
     unknown = set(data) - set(fields) - set(fixed)
@@ -81,6 +90,9 @@ def _build(cls, path, data, **fixed):
     ]
     if missing:
         raise ConfigError(f"{path}: missing required keys {missing}")
+    todo = placeholders(data)
+    if todo:
+        raise ConfigError(f"{path}: fill in {', '.join(todo)} (`barn init` lists what is left)")
     return cls(**data, **fixed)
 
 
@@ -88,7 +100,7 @@ def load_settings(home):
     # BARN_SETTINGS lets one machine act as several developers (testing).
     path = Path(os.environ.get("BARN_SETTINGS") or home / "config.toml")
     if not path.exists():
-        raise ConfigError(f"missing {path}; see the README (Setup)")
+        raise ConfigError(f"missing {path}; run `barn init`")
     data = tomllib.loads(path.read_text())
     data.setdefault("user", os.environ.get("USER") or getpass.getuser())
     return _build(Settings, path, data)
@@ -97,7 +109,7 @@ def load_settings(home):
 def load_account(home, name):
     path = home / "accounts" / f"{name}.toml"
     if not path.exists():
-        raise ConfigError(f"missing account file {path}; see docs/account-prerequisites.md")
+        raise ConfigError(f"missing account file {path}; run `barn init`")
     data = tomllib.loads(path.read_text())
     data.pop("name", None)
     return _build(Account, path, data, name=name)

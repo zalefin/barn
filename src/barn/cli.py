@@ -187,8 +187,10 @@ def create(ctx, env, size=None):
     ui.header(ctx.alias(env), size, ctx.account.region, f"account {ctx.account.name}")
 
     subnet = vol.get("subnet_id") or ctx.account.subnet_ids[0]
+    existed = bool(vol)
     with ui.step("Home volume") as s:
         apply(vol_tf, volume_vars(ctx, env, subnet), s)
+        changed = existed and " 0 changed" not in f" {s.result}"
         vol = vol_tf.outputs()
         s.result = " · ".join(p for p in (vol["volume_id"], vol["availability_zone"], s.result) if p)
 
@@ -203,7 +205,19 @@ def create(ctx, env, size=None):
         with ui.step("Starting"):
             start_instance(ctx, instance_id)
     wait_for_bootstrap(ctx, env, instance_id)
+    if changed:
+        grow_home(ctx, env)
     ready(ctx, env)
+
+
+def grow_home(ctx, env):
+    """Grow the home filesystem to a resized volume (first boot does it for new boxes)."""
+    with ui.step("Growing home filesystem") as s:
+        r = ssh.run(ctx.alias(env), 'sudo -n resize2fs "$(findmnt -n -o SOURCE ~)" 2>&1 && df -h ~ | tail -1')
+        if r.returncode != 0:
+            raise RuntimeError(f"resize2fs failed (needs passwordless sudo): {r.stdout.strip()}")
+        size, _, free = r.stdout.split()[-5:-2]  # df: Filesystem Size Used Avail Use% Mounted
+        s.result = f"{size} total, {free} free"
 
 
 def ready(ctx, env):
@@ -300,9 +314,11 @@ def environments(ctx):
     return {k: v for k, v in envs.items() if k}
 
 
-def env_table(envs):
+def env_table(envs, width=120):
     table = Table(box=box.SIMPLE_HEAD, header_style="muted", pad_edge=False)
-    for col in ("ENV", "STATE", "TYPE", "UPTIME", "COST", "INSTANCE"):
+    # The instance ID is the first thing to go in a narrow terminal.
+    columns = ("ENV", "STATE", "TYPE", "UPTIME", "COST") + (("INSTANCE",) if width >= 90 else ())
+    for col in columns:
         table.add_column(col, no_wrap=True, justify="right" if col in ("UPTIME", "COST") else "left")
     hourly_total = 0.0
     for env in sorted(envs):
@@ -316,16 +332,17 @@ def env_table(envs):
             hourly_total += hourly or 0
         if e.get("volume_gb"):
             cost.append(f"${e['volume_gb'] * GP3_MONTH_PER_GB:.0f}/mo")
-        table.add_row(
+        row = [
             f"[name]{env}[/]",
             f"[{STATE_STYLE.get(state, 'muted')}]{state}[/]",
             e.get("type", "[muted]-[/]"),
             ui.elapsed(up.total_seconds()) if up else "[muted]-[/]",
             " + ".join(cost) or "[muted]-[/]",
             f"[muted]{e.get('id', '-')}[/]",
-        )
+        ]
+        table.add_row(*row[: len(columns)])
     running = sum(1 for e in envs.values() if e.get("state") == "running")
-    table.caption = f"{len(envs)} environments · {running} running" + (
+    table.caption = f"{len(envs)} environment{'s' * (len(envs) != 1)} · {running} running" + (
         f" · ~${hourly_total:.2f}/h" if hourly_total else ""
     )
     table.caption_style = "muted"
@@ -338,7 +355,7 @@ def list_envs(ctx):
     if not envs:
         ui.info("no environments", "create one with `barn create <env>`")
         return
-    ui.out.print(env_table(envs))
+    ui.out.print(env_table(envs, ui.out.width))
 
 
 DURATION = re.compile(r"^(\d+)([mhd])$")
@@ -376,7 +393,7 @@ app = typer.Typer(
     pretty_exceptions_enable=False,
 )
 
-ENVIRONMENTS, ON_THE_BOX = "Environments", "On the box"
+SETUP, ENVIRONMENTS, ON_THE_BOX = "Setup", "Environments", "On the box"
 Env = Annotated[str, typer.Argument(metavar="ENV", help="Environment name, e.g. [cyan]dev[/] (the box is [cyan]<user>-<env>[/]).")]
 Verbose = Annotated[bool, typer.Option("--verbose", "-v", help="Stream terraform output instead of a spinner.")]
 
@@ -394,6 +411,25 @@ def _main(
     ] = False,
 ):
     pass
+
+
+@app.command("init", rich_help_panel=SETUP)
+def init_cmd(
+    account_file: Annotated[
+        str | None,
+        typer.Option("--account-file", metavar="PATH", help="Copy this account file in (e.g. from your platform admin)."),
+    ] = None,
+    account: Annotated[
+        str | None, typer.Option(metavar="NAME", help="Account name (default: the account file's name, or default).")
+    ] = None,
+    aws_profile: Annotated[
+        str | None, typer.Option("--aws-profile", metavar="PROFILE", help="AWS CLI profile to use.")
+    ] = None,
+):
+    """Create the barn config files, check your tools, and list what you still need to edit. Safe to re-run."""
+    from .setup import init
+
+    raise typer.Exit(init(app_home(), account, aws_profile, account_file))
 
 
 @app.command("create", rich_help_panel=ENVIRONMENTS)

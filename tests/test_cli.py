@@ -158,3 +158,43 @@ def test_rsync_never_deletes_or_touches_home_dir(tmp_path):
 
 def test_rsync_empty_source(tmp_path):
     assert rsync_cmd(tmp_path, "a") is None
+
+
+def test_init_scaffolds_without_overwriting(tmp_path, monkeypatch):
+    from barn.config import PLACEHOLDER
+    from barn.setup import scaffold, todo
+
+    monkeypatch.setenv("USER", "zach")
+    done = scaffold(tmp_path)
+    assert [(p.relative_to(tmp_path).as_posix(), a) for p, a, _ in done] == [
+        ("config.toml", "created"),
+        ("accounts/default.toml", "created"),
+        ("home/.barn/env", "created"),
+    ]
+    assert (tmp_path / "home" / ".barn" / "env").stat().st_mode & 0o777 == 0o600
+    config = (tmp_path / "config.toml").read_text()
+    assert 'user = "zach"' in config and f'aws_profile = "{PLACEHOLDER}"' in config
+
+    required = [what for needed, _, what in todo(tmp_path) if needed]
+    assert any("aws_profile" in w for w in required) and any("state_bucket" in w for w in required)
+    with pytest.raises(ConfigError, match="fill in aws_profile"):
+        load_settings(tmp_path)
+
+    (tmp_path / "config.toml").write_text("edited")
+    assert all(a == "kept" for _, a, _ in scaffold(tmp_path))
+    assert (tmp_path / "config.toml").read_text() == "edited"
+
+
+def test_init_copies_account_file(tmp_path, monkeypatch):
+    from barn.setup import scaffold
+
+    src = tmp_path / "sandbox.toml"
+    src.write_text(ACCOUNT)
+    home = tmp_path / "home"
+    scaffold(home, aws_profile="dev", account_file=src)
+    assert (home / "accounts" / "sandbox.toml").read_text() == ACCOUNT
+    assert 'account = "sandbox"' in (home / "config.toml").read_text()
+    monkeypatch.delenv("BARN_SETTINGS", raising=False)
+    assert load_account(home, load_settings(home).account).security_group_id == "sg-1"
+    with pytest.raises(ConfigError, match="no such account file"):
+        scaffold(tmp_path / "other", account_file=tmp_path / "missing.toml")

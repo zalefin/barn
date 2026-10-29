@@ -2,6 +2,8 @@
 
 import subprocess
 
+from botocore.config import Config
+
 from . import ssh, ui
 from .cli import FAILED, MARKER, show_console, ssm_online
 from .sync import sources
@@ -68,61 +70,75 @@ TTY_CHECK = 'loginctl show-session "$XDG_SESSION_ID" -p Class -p TTY 2>&1 | tr "
 
 def simulate_checks(ctx):
     """Simulate the permissions the CLI needs on the developer's role (catches a
-    silently removed policy). docs/account-prerequisites.md lists them."""
+    silently removed policy), and two it must not have. docs/account-prerequisites.md
+    lists them."""
     a = ctx.account
     role = a.developer_role_arn
     if not role:
         return [(WARN, "policy simulation", "skipped: no developer_role_arn in the account file")]
-    acct = role.split(":")[4]
-    ec2 = f"arn:aws:ec2:{a.region}:{acct}"
-    tagged = {
-        "aws:ResourceTag/barn": "true",
-        "aws:RequestTag/barn": "true",
-        "ssm:resourceTag/barn": "true",
-    }
-    cases = [
-        ("ec2:RunInstances", f"{ec2}:instance/*"),
-        ("ec2:CreateVolume", f"{ec2}:volume/*"),
-        ("ec2:StartInstances", f"{ec2}:instance/i-0"),
-        ("ec2:StopInstances", f"{ec2}:instance/i-0"),
-        ("ec2:TerminateInstances", f"{ec2}:instance/i-0"),
-        ("ec2:AttachVolume", f"{ec2}:volume/vol-0"),
-        ("ec2:GetConsoleOutput", f"{ec2}:instance/i-0"),
-        ("ssm:StartSession", f"{ec2}:instance/i-0"),
-        ("ssm:StartSession", f"arn:aws:ssm:{a.region}::document/AWS-StartSSHSession"),
-        ("s3:PutObject", f"arn:aws:s3:::{a.state_bucket}/env/x"),
-        ("s3:ListBucket", f"arn:aws:s3:::{a.state_bucket}"),
-    ]
-    context = [
-        {"ContextKeyName": k, "ContextKeyValues": [v], "ContextKeyType": "string"} for k, v in tagged.items()
-    ] + [
-        {"ContextKeyName": "ssm:SessionDocumentAccessCheck", "ContextKeyValues": ["true"], "ContextKeyType": "boolean"},
-        {"ContextKeyName": "s3:prefix", "ContextKeyValues": ["env/x"], "ContextKeyType": "string"},
+    _, part, _, _, acct, _ = role.split(":", 5)
+    ec2 = f"arn:{part}:ec2:{a.region}:{acct}"
+    ssm = f"arn:{part}:ssm:{a.region}"
+    ami_acct = "" if a.ami_ssm_parameter.startswith("/aws/service/") else acct
+
+    def ctx_entry(key, value, kind="string"):
+        return {"ContextKeyName": key, "ContextKeyValues": [value], "ContextKeyType": kind}
+
+    base = [
+        ctx_entry("aws:ResourceTag/barn", "true"),
+        ctx_entry("aws:RequestTag/barn", "true"),
+        ctx_entry("ssm:resourceTag/barn", "true"),
+        ctx_entry("ssm:SessionDocumentAccessCheck", "true", "boolean"),
+        ctx_entry("s3:prefix", "env/x"),
         # Without it, region-restricting SCPs make the simulator report explicitDeny.
-        {"ContextKeyName": "aws:RequestedRegion", "ContextKeyValues": [a.region], "ContextKeyType": "string"},
+        ctx_entry("aws:RequestedRegion", a.region),
     ]
-    iam = ctx.aws.client("iam")
-    results = []
-    for action, resource in cases:
-        r = iam.simulate_principal_policy(
-            PolicySourceArn=role, ActionNames=[action], ResourceArns=[resource], ContextEntries=context
+    on_create = [ctx_entry("ec2:CreateAction", "RunInstances")]
+    # action, resource, what, extra context
+    needed = [
+        ("ec2:RunInstances", f"{ec2}:instance/*", "tagged instances", []),
+        ("ec2:CreateVolume", f"{ec2}:volume/*", "tagged volumes", []),
+        ("ec2:CreateTags", f"{ec2}:instance/*", "new instances", on_create),
+        ("ec2:StartInstances", f"{ec2}:instance/i-0", "tagged instances", []),
+        ("ec2:StopInstances", f"{ec2}:instance/i-0", "tagged instances", []),
+        ("ec2:TerminateInstances", f"{ec2}:instance/i-0", "tagged instances", []),
+        ("ec2:ModifyInstanceAttribute", f"{ec2}:instance/i-0", "instance type", [ctx_entry("ec2:Attribute", "InstanceType")]),
+        ("ec2:AttachVolume", f"{ec2}:volume/vol-0", "tagged volumes", []),
+        ("ec2:GetConsoleOutput", f"{ec2}:instance/i-0", "tagged instances", []),
+        ("ssm:GetParameter", f"{ssm}:{ami_acct}:parameter{a.ami_ssm_parameter}", "the AMI parameter", []),
+        ("ssm:StartSession", f"{ec2}:instance/i-0", "tagged instances", []),
+        ("ssm:StartSession", f"{ssm}::document/AWS-StartSSHSession", "the SSH document", []),
+        ("s3:PutObject", f"arn:{part}:s3:::{a.state_bucket}/env/x", "state objects", []),
+        ("s3:DeleteObject", f"arn:{part}:s3:::{a.state_bucket}/env/x", "state lockfiles", []),
+        ("s3:ListBucket", f"arn:{part}:s3:::{a.state_bucket}", "the state bucket", []),
+    ]
+    # Recommended, not required: a role that can do these can get into anyone's box.
+    forbidden = [
+        ("ssm:StartSession", f"{ssm}:{acct}:document/SSM-SessionManagerRunShell", "policy denies shell sessions",
+         "allowed; anyone with this role can open a shell on any box", []),
+        ("ec2:ModifyInstanceAttribute", f"{ec2}:instance/i-0", "policy denies changing user data",
+         "allowed; anyone with this role can run code as root on any box", [ctx_entry("ec2:Attribute", "UserData")]),
+    ]
+    iam = ctx.aws.client("iam", config=Config(retries={"mode": "standard", "max_attempts": 10}))
+
+    def decision(action, resource, extra):
+        return iam.simulate_principal_policy(
+            PolicySourceArn=role, ActionNames=[action], ResourceArns=[resource], ContextEntries=base + extra
         )["EvaluationResults"][0]
+
+    results = []
+    for action, resource, what, extra in needed:
+        r = decision(action, resource, extra)
         ok = r["EvalDecision"] == "allowed"
+        label = f"policy allows {action} on {what}"
         if not ok and r.get("OrganizationsDecisionDetail", {}).get("AllowedByOrganizations") is False:
             # The simulator applies SCPs even where they do not bind (a management account).
-            results.append((WARN, f"policy allows {action}", "denied by an Organizations SCP in the simulator"))
+            results.append((WARN, label, "denied by an Organizations SCP in the simulator"))
             continue
-        results.append((PASS if ok else FAIL, f"policy allows {action}", "" if ok else r["EvalDecision"]))
-    # Recommended, not required: SSH-only keeps per-developer isolation by SSH key.
-    r = iam.simulate_principal_policy(
-        PolicySourceArn=role,
-        ActionNames=["ssm:StartSession"],
-        ResourceArns=[f"arn:aws:ssm:{a.region}:{acct}:document/SSM-SessionManagerRunShell"],
-        ContextEntries=context,
-    )["EvaluationResults"][0]
-    denied = r["EvalDecision"] != "allowed"
-    detail = "" if denied else "allowed; anyone with this role can open a shell on any box"
-    results.append((PASS if denied else WARN, "policy denies shell sessions", detail))
+        results.append((PASS if ok else FAIL, label, "" if ok else r["EvalDecision"]))
+    for action, resource, label, problem, extra in forbidden:
+        denied = decision(action, resource, extra)["EvalDecision"] != "allowed"
+        results.append((PASS if denied else WARN, label, "" if denied else problem))
     return results
 
 
@@ -167,17 +183,17 @@ def doctor(ctx, env):
     try:
         with ui.step("Checking credentials and permissions"):
             ident = ctx.aws.client("sts").get_caller_identity()
-            add(PASS, "aws credentials", ident["Arn"])
             try:
                 checks = simulate_checks(ctx)
             except Exception as e:  # noqa: BLE001
                 checks = [(FAIL, "policy simulation", str(e))]
-            for r in checks:
-                add(*r)
             inst = ctx.find_instance(env)
     except Exception as e:  # noqa: BLE001 - report any credential problem as a failure
         add(FAIL, "aws credentials", str(e))
         return summarize(results)
+    add(PASS, "aws credentials", ident["Arn"])
+    for r in checks:
+        add(*r)
 
     section("Instance")
     if not inst or inst["State"]["Name"] != "running":

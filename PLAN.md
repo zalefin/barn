@@ -104,7 +104,7 @@ docs/
   account-prerequisites.md  what an account must provide; the account file
   developer-policy.json     the developer IAM policy, with placeholders
   design-log.md             interview history (historical)
-examples/                   config.toml and account.toml to copy
+src/barn/templates/         config.toml, account.toml, env written by `barn init`
 ```
 
 Local, per developer (`~/.config/barn/`, or `$BARN_HOME`):
@@ -597,3 +597,27 @@ notifications.
   re-applying a stack created before the rename recreates its resources. Its
   account files were dropped; regenerate them with `terraform output`.
 
+
+## 22. End-to-end verification of the developer policy (2026-10-29)
+
+- Sandbox account 123456789012: `barn-platform-minimal` applied with an IAM
+  user (`barn-dev`) that can only assume a stand-in existing role, and the
+  developer policy attached to that role (`developer_role_mode = "attach"`).
+  The whole lifecycle passed as that user; CloudTrail event history gave the
+  exact API calls, and deny experiments proved the authorization-only ones.
+  Method and results: docs/account-prerequisites.md ("How this policy was
+  verified"); tooling in `barn-platform-minimal/e2e/`.
+- Policy changes from it and from an independent review: exact Describe list
+  (no `ec2:Describe*`), no `sts:GetCallerIdentity` or session-management grants,
+  `ModifyInstanceAttribute` only for `InstanceType` and
+  `InstanceInitiatedShutdownBehavior` (user data could run code as root on any
+  box), scoped `CreateTags`/`DeleteTags` for changing `extra_tags`,
+  `ModifyVolume` for growing `volume_gb`, ENIs pinned to the platform subnets,
+  and a correct ARN for custom AMI parameters.
+- barn changes: first boot and `create` grow the home filesystem to the
+  volume; `doctor` simulates the new permissions (and two that must be denied)
+  in the role's partition with standard retries; narrow terminals drop `list`'s
+  instance column; terraform init errors print as a block.
+- Known, documented, not fixed: developers in one account can take over each
+  other's boxes and volumes (no owner binding), `AWS-StartSSHSession` forwards
+  any port, no proxy support, no cost limits.

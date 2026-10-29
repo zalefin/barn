@@ -48,6 +48,8 @@ sed -i "\|[[:space:]]$${HOME_DIR}[[:space:]]|d" /etc/fstab
 echo "UUID=$FS_UUID $HOME_DIR ext4 defaults,nofail 0 2" >> /etc/fstab
 systemctl daemon-reload
 mountpoint -q "$HOME_DIR" || mount "$HOME_DIR" || die "mount $HOME_DIR failed"
+# volume_gb may have grown since the filesystem was made; ext4 grows online.
+resize2fs "$DEV" >/dev/null 2>&1 || warn "resize2fs $DEV failed"
 
 # 3. The ubuntu user. Its UID (1000) is the same on every box, so a reattached
 # volume keeps the right owner, and it matches container images that run as 1000.

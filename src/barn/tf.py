@@ -15,6 +15,8 @@ MANAGED = ("terraform", "bootstrap")
 
 # "Apply complete! Resources: 1 added, 0 changed, 0 destroyed." / "Destroy complete! Resources: 2 destroyed."
 SUMMARY = re.compile(r"(?:Apply|Destroy) complete! Resources: (.*)\.")
+# Resource progress, e.g. "aws_instance.box: Still creating... [10s elapsed]"; not plan output.
+PROGRESS = re.compile(r"^[\w.-]+(\[[^\]]*\])?: \S")
 
 
 class TerraformError(Exception):
@@ -81,8 +83,7 @@ class Terraform:
         cmd = ["terraform", f"-chdir={self.dir}", *args]
         r = subprocess.run(cmd, env=self._environ(), text=True, capture_output=capture)
         if r.returncode != 0:
-            detail = (r.stderr or "").strip() if capture else ""
-            raise TerraformError(f"terraform {args[0]} ({self.root}) failed {detail}".strip())
+            raise TerraformError(f"terraform {args[0]} ({self.root}) failed", tail=(r.stderr or "") if capture else "")
         return r.stdout
 
     def _run_logged(self, *args, on_line=None):
@@ -100,7 +101,7 @@ class Terraform:
             for line in p.stdout:
                 f.write(line)
                 lines.append(line)
-                if on_line and line.strip():
+                if on_line and PROGRESS.match(line):
                     on_line(line.strip())
         if p.returncode != 0:
             tail = "".join(lines[-25:])
@@ -116,6 +117,7 @@ class Terraform:
             "init",
             "-input=false",
             "-reconfigure",
+            "-no-color",
             f"-backend-config=bucket={acct.state_bucket}",
             f"-backend-config=key=env/{self.user}/{self.env}/{self.root}.tfstate",
             f"-backend-config=region={acct.region}",
@@ -141,5 +143,5 @@ class Terraform:
 
     def outputs(self):
         self.init()
-        out = json.loads(self._run("output", "-json", capture=True) or "{}")
+        out = json.loads(self._run("output", "-json", "-no-color", capture=True) or "{}")
         return {k: v["value"] for k, v in out.items()}

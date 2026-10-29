@@ -5,9 +5,17 @@
       "Sid": "Read",
       "Effect": "Allow",
       "Action": [
-        "sts:GetCallerIdentity",
         "ssm:DescribeInstanceInformation",
-        "ec2:Describe*"
+        "ec2:DescribeVpcs",
+        "ec2:DescribeVolumesModifications",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeTags",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceTypes",
+        "ec2:DescribeInstanceCreditSpecifications",
+        "ec2:DescribeInstanceAttribute",
+        "ec2:DescribeImages"
       ],
       "Resource": "*"
     },
@@ -42,9 +50,22 @@
         "arn:aws:ec2:REGION:ACCOUNT_ID:subnet/SUBNET_ID_2",
         "arn:aws:ec2:REGION:ACCOUNT_ID:subnet/SUBNET_ID_1",
         "arn:aws:ec2:REGION:ACCOUNT_ID:security-group/SECURITY_GROUP_ID",
-        "arn:aws:ec2:REGION:ACCOUNT_ID:network-interface/*",
         "arn:aws:ec2:REGION::image/*"
       ]
+    },
+    {
+      "Sid": "RunInstancesNetworkInterface",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:REGION:ACCOUNT_ID:network-interface/*",
+      "Condition": {
+        "ArnEquals": {
+          "ec2:Subnet": [
+            "arn:aws:ec2:REGION:ACCOUNT_ID:subnet/SUBNET_ID_1",
+            "arn:aws:ec2:REGION:ACCOUNT_ID:subnet/SUBNET_ID_2"
+          ]
+        }
+      }
     },
     {
       "Sid": "TagOnCreate",
@@ -52,7 +73,6 @@
       "Action": "ec2:CreateTags",
       "Resource": [
         "arn:aws:ec2:REGION:ACCOUNT_ID:volume/*",
-        "arn:aws:ec2:REGION:ACCOUNT_ID:network-interface/*",
         "arn:aws:ec2:REGION:ACCOUNT_ID:instance/*"
       ],
       "Condition": {
@@ -71,7 +91,7 @@
         "ec2:TerminateInstances",
         "ec2:StopInstances",
         "ec2:StartInstances",
-        "ec2:ModifyInstanceAttribute",
+        "ec2:ModifyVolume",
         "ec2:GetConsoleOutput",
         "ec2:DetachVolume",
         "ec2:DeleteVolume",
@@ -82,6 +102,45 @@
         "arn:aws:ec2:REGION:ACCOUNT_ID:instance/*"
       ],
       "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/barn": "true"
+        }
+      }
+    },
+    {
+      "Sid": "ModifyInstanceTypeAndShutdown",
+      "Effect": "Allow",
+      "Action": "ec2:ModifyInstanceAttribute",
+      "Resource": "arn:aws:ec2:REGION:ACCOUNT_ID:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/barn": "true",
+          "ec2:Attribute": [
+            "InstanceType",
+            "InstanceInitiatedShutdownBehavior"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "EditExtraTags",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DeleteTags",
+        "ec2:CreateTags"
+      ],
+      "Resource": [
+        "arn:aws:ec2:REGION:ACCOUNT_ID:volume/*",
+        "arn:aws:ec2:REGION:ACCOUNT_ID:instance/*"
+      ],
+      "Condition": {
+        "ForAllValues:StringNotLike": {
+          "aws:TagKeys": [
+            "barn",
+            "barn:*",
+            "Name"
+          ]
+        },
         "StringEquals": {
           "aws:ResourceTag/barn": "true"
         }
@@ -122,15 +181,6 @@
           "ssm:SessionDocumentAccessCheck": "true"
         }
       }
-    },
-    {
-      "Sid": "OwnSessions",
-      "Effect": "Allow",
-      "Action": [
-        "ssm:TerminateSession",
-        "ssm:ResumeSession"
-      ],
-      "Resource": "arn:aws:ssm:*:ACCOUNT_ID:session/${aws:userid}-*"
     },
     {
       "Sid": "StateList",

@@ -1,0 +1,10 @@
+# barn settings. Written by `barn init`; edit freely. Run `barn init` again for a checklist.
+account = "$account"              # selects accounts/<account>.toml next to this file
+aws_profile = "$aws_profile"      # AWS CLI profile with the developer permissions (may assume a role)
+user = "$user"                    # owner tag and env prefix: ssh $user-<env>
+ssh_public_key = "$ssh_public_key"
+default_size = "m7i.xlarge"       # 4 vCPU, 16 GiB
+passwordless_sudo = true
+idle_hours = 4
+volume_gb = 100
+# shared_home = "~/src/team-dotfiles/home"   # optional team defaults, synced before home/

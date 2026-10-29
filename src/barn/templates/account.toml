@@ -1,0 +1,16 @@
+# Where barn finds the AWS account's prerequisites. Get the values from whoever
+# set up the account (the demo platform prints this file with
+# `terraform output -raw account_file`). What each one must point at: barn's
+# docs/account-prerequisites.md.
+region = "CHANGE-ME"                       # e.g. us-east-1
+state_bucket = "CHANGE-ME"                 # S3 bucket for terraform state
+execution_instance_profile = "CHANGE-ME"   # instance profile name for the boxes
+security_group_id = "CHANGE-ME"            # sg-...
+subnet_ids = ["CHANGE-ME"]                 # subnet-...; new volumes use the first
+
+# Optional
+ami_ssm_parameter = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+developer_role_arn = ""   # role your profile's permissions come from; enables doctor's policy check
+kms_key_id = ""           # empty: the account's default EBS key
+
+[extra_tags]

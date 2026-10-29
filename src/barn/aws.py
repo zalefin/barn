@@ -17,8 +17,8 @@ class Aws:
         except ProfileNotFound as e:
             raise ConfigError(f"{e}; set aws_profile in config.toml to a profile in ~/.aws/config") from e
 
-    def client(self, name):
-        return self.session.client(name)
+    def client(self, name, **kwargs):
+        return self.session.client(name, **kwargs)
 
     def env(self):
         """Environment variables that give a subprocess (terraform) the same identity."""

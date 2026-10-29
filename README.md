@@ -27,16 +27,19 @@ uv tool upgrade barn              # later
 
 ## Setup
 
-Everything local lives in `~/.config/barn/` (set
-`BARN_HOME` to move it):
+Everything local lives in `~/.config/barn/` (set `BARN_HOME` to move it).
+`barn init` creates it, checks your tools, and lists what is left to edit:
 
 ```bash
-mkdir -p ~/.config/barn/accounts
-cp examples/config.toml ~/.config/barn/config.toml                # account, aws_profile, user, ssh key
-cp examples/account.toml ~/.config/barn/accounts/<account>.toml   # or get it from your admin
+barn init                                                   # templates with CHANGE-ME placeholders
+barn init --account-file sandbox.toml --aws-profile my-dev   # or start from your admin's account file
 ```
 
-`account` selects `accounts/<account>.toml`. `aws_profile` is used as-is by
+It never overwrites a file, so run it again after editing to see what is
+left; other commands refuse to run while a `CHANGE-ME` remains.
+
+`account` selects `accounts/<account>.toml`, which says where the account's
+network, roles and state bucket are ([docs](docs/account-prerequisites.md)). `aws_profile` is used as-is by
 boto3, Terraform and SSH. If your permissions come from a role, put the role in
 the profile (`role_arn` + `source_profile`, or SSO). `user` is your name in AWS
 tags and SSH host names (`ssh zach-dev`). On the box you log in as `ubuntu`
@@ -158,4 +161,4 @@ scripts/check.sh   # pytest, terraform fmt/validate, shellcheck
 Layout: `src/barn/` (CLI), `src/barn/terraform/{volume,instance}`
 (per-environment roots, shipped in the package), `src/barn/bootstrap/`
 (first-boot script and idle check), `docs/` (account prerequisites and the
-developer policy), `examples/`. The design is in `PLAN.md`.
+developer policy), `src/barn/templates/` (what `barn init` writes). The design is in `PLAN.md`.
