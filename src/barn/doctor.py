@@ -1,10 +1,9 @@
 """`doctor <env>` (PLAN.md section 12). Each check prints pass, warn, or fail."""
 
 import subprocess
-import sys
 
-from . import ssh
-from .cli import FAILED, MARKER, console_tail, ssm_online
+from . import ssh, ui
+from .cli import FAILED, MARKER, show_console, ssm_online
 from .sync import sources
 
 PASS, WARN, FAIL = "pass", "warn", "fail"
@@ -142,36 +141,55 @@ def mnt_refs(ctx):
     return hits
 
 
+def summarize(results):
+    counts = {k: sum(1 for s, _, _ in results if s == k) for k in (PASS, WARN, FAIL)}
+    parts = [f"[ok]{counts[PASS]} passed[/]"]
+    if counts[WARN]:
+        parts.append(f"[warn]{counts[WARN]} warning{'s' * (counts[WARN] != 1)}[/]")
+    parts.append(f"[fail]{counts[FAIL]} failed[/]" if counts[FAIL] else "[muted]0 failed[/]")
+    ui.err.print()
+    ui.err.print(" [muted]·[/] ".join(parts))
+    return 1 if counts[FAIL] else 0
+
+
 def doctor(ctx, env):
     results = []
 
     def add(status, check, detail=""):
         results.append((status, check, detail))
-        print(f"[{status}] {check}" + (f": {detail}" if detail else ""), flush=True)
+        ui.check(status, check, detail)
 
+    def section(title):
+        ui.err.print(f"\n[name]{title}[/]")
+
+    ui.header(ctx.alias(env), ctx.account.region, f"account {ctx.account.name}", f"profile {ctx.settings.aws_profile}")
+    section("AWS")
     try:
-        ident = ctx.aws.client("sts").get_caller_identity()
-        add(PASS, "aws credentials", f"{ident['Arn']} (profile {ctx.settings.aws_profile})")
+        with ui.step("Checking credentials and permissions"):
+            ident = ctx.aws.client("sts").get_caller_identity()
+            add(PASS, "aws credentials", ident["Arn"])
+            try:
+                checks = simulate_checks(ctx)
+            except Exception as e:  # noqa: BLE001
+                checks = [(FAIL, "policy simulation", str(e))]
+            for r in checks:
+                add(*r)
+            inst = ctx.find_instance(env)
     except Exception as e:  # noqa: BLE001 - report any credential problem as a failure
         add(FAIL, "aws credentials", str(e))
-        return 1
-    try:
-        for r in simulate_checks(ctx):
-            add(*r)
-    except Exception as e:  # noqa: BLE001
-        add(FAIL, "policy simulation", str(e))
+        return summarize(results)
 
-    inst = ctx.find_instance(env)
+    section("Instance")
     if not inst or inst["State"]["Name"] != "running":
         add(FAIL, "instance running", inst["State"]["Name"] if inst else "no instance")
-        return 1
+        return summarize(results)
     add(PASS, "instance running", f"{inst['InstanceId']} {inst['InstanceType']}")
     iid = inst["InstanceId"]
     if ssm_online(ctx, iid):
         add(PASS, "ssm online")
     else:
         add(FAIL, "ssm online", "SSM does not report the instance online")
-        return 1
+        return summarize(results)
 
     alias = ctx.alias(env)
     script = (
@@ -181,27 +199,30 @@ def doctor(ctx, env):
         .replace("SYNCDIR", str(ctx.home / "home"))
     )
     try:
-        r = ssh.run(alias, script, timeout=240)
+        with ui.step("Running checks on the box"):
+            r = ssh.run(alias, script, timeout=240)
+            t = ssh.run(alias, TTY_CHECK, timeout=60, tty=True)
     except subprocess.TimeoutExpired:
         r = None
     if r is None or r.returncode not in (0, 1) or not r.stdout:
         add(FAIL, "ssh over ssm", (r.stderr.strip() if r else "timed out") or "no output")
-        print(console_tail(ctx, iid), file=sys.stderr)
-        return 1
+        show_console(ctx, iid)
+        return summarize(results)
     add(PASS, "ssh over ssm", alias)
+    out = t.stdout.replace("\r", "").strip()
+    has_tty = "TTY=pts/" in out and "Class=user" in out
+    add(PASS if has_tty else FAIL, "ssh session in logind with a tty", out or t.stderr.strip())
+
+    section("Box")
     for line in r.stdout.splitlines():
         parts = line.split("|", 2)
         if len(parts) == 3 and parts[0] in (PASS, WARN, FAIL):
             add(*parts)
             if parts[1] == "bootstrap marker" and parts[0] == FAIL:
-                print(console_tail(ctx, iid), file=sys.stderr)
+                show_console(ctx, iid)
 
-    t = ssh.run(alias, TTY_CHECK, timeout=60, tty=True)
-    out = t.stdout.replace("\r", "").strip()
-    has_tty = "TTY=pts/" in out and "Class=user" in out
-    add(PASS if has_tty else FAIL, "ssh session in logind with a tty", out or t.stderr.strip())
-
+    section("Local")
     hits = mnt_refs(ctx)
     add(WARN if hits else PASS, "no /mnt/ paths in synced files", ", ".join(hits))
 
-    return 1 if any(s == FAIL for s, _, _ in results) else 0
+    return summarize(results)

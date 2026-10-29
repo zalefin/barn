@@ -1,9 +1,13 @@
 import pytest
 
-from barn.cli import build_parser, parse_duration
+from typer.testing import CliRunner
+
+from barn import cli
+from barn.cli import app, parse_duration
 from barn.config import UBUNTU_AMI, ConfigError, check_env_name, load_account, load_settings
-from barn.sync import credential_files, rsync_cmd
-from barn.tf import PACKAGE, install_roots
+from barn.sync import changed_files, credential_files, rsync_cmd
+from barn.tf import PACKAGE, install_roots, summary
+from barn.ui import elapsed
 
 
 def test_parse_duration():
@@ -21,11 +25,59 @@ def test_env_names():
             check_env_name(bad)
 
 
-def test_parser_commands():
-    p = build_parser()
-    assert p.parse_args(["create", "dev", "--size", "t3.micro"]).size == "t3.micro"
-    assert p.parse_args(["destroy", "dev", "--volume"]).volume
-    assert p.parse_args(["hold", "dev", "8h"]).duration == "8h"
+@pytest.fixture
+def calls(monkeypatch):
+    """Record what each command would do, without AWS."""
+    seen = []
+    monkeypatch.setattr(cli, "Context", lambda verbose=False: f"ctx(verbose={verbose})")
+    for name in ("create", "destroy", "hold"):
+        monkeypatch.setattr(cli, name, lambda *a, _n=name: seen.append((_n, *a)) or 0)
+    monkeypatch.setattr(cli, "check_env_name", lambda env: env)
+    monkeypatch.setattr(cli.os, "execvp", lambda *a: seen.append(("execvp", *a)))
+    return seen
+
+
+def test_commands_parse(calls):
+    run = CliRunner().invoke
+    assert run(app, ["create", "dev", "--size", "t3.micro", "-v"]).exit_code == 0
+    assert run(app, ["destroy", "dev", "--volume"]).exit_code == 0
+    assert run(app, ["hold", "dev", "8h"]).exit_code == 0
+    assert calls == [
+        ("create", "ctx(verbose=True)", "dev", "t3.micro"),
+        ("destroy", "ctx(verbose=False)", "dev", True),
+        ("hold", "ctx(verbose=False)", "dev", "8h"),
+    ]
+
+
+def test_ssh_passes_extra_args_through(calls, monkeypatch):
+    class Ctx:
+        def alias(self, env):
+            return f"zach-{env}"
+
+    monkeypatch.setattr(cli, "Context", Ctx)
+    r = CliRunner().invoke(app, ["ssh", "dev", "-N", "-L", "8080:localhost:8080"])
+    assert r.exit_code == 0, r.output
+    assert calls == [("execvp", "ssh", ["ssh", "zach-dev", "-N", "-L", "8080:localhost:8080"])]
+
+
+def test_help_lists_every_command():
+    out = CliRunner().invoke(app, ["--help"]).output
+    for name in ("create", "destroy", "start", "stop", "list", "ssh", "sync", "doctor", "hold"):
+        assert name in out
+
+
+def test_terraform_summary_and_elapsed():
+    assert summary("...\nApply complete! Resources: 1 added, 0 changed, 0 destroyed.\n") == (
+        "1 added, 0 changed, 0 destroyed"
+    )
+    assert summary("Destroy complete! Resources: 2 destroyed.") == "2 destroyed"
+    assert summary("Error: boom") == ""
+    assert (elapsed(5), elapsed(65), elapsed(3725)) == ("5s", "1m05s", "1h02m")
+
+
+def test_changed_files_ignores_dirs_and_untouched():
+    out = "cd+++++++++ .claude/\n<f+++++++++ .claude/settings.json\n.d..t...... ./\n<f.st...... .gitconfig\n"
+    assert changed_files(out) == [".claude/settings.json", ".gitconfig"]
 
 
 ACCOUNT = (

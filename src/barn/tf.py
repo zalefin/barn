@@ -4,6 +4,7 @@ per environment and root, state in the account's S3 bucket."""
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -12,8 +13,21 @@ PACKAGE = Path(__file__).parent
 MANAGED = ("terraform", "bootstrap")
 
 
+# "Apply complete! Resources: 1 added, 0 changed, 0 destroyed." / "Destroy complete! Resources: 2 destroyed."
+SUMMARY = re.compile(r"(?:Apply|Destroy) complete! Resources: (.*)\.")
+
+
 class TerraformError(Exception):
-    pass
+    def __init__(self, message, log=None, tail=""):
+        super().__init__(message)
+        self.log = log
+        self.tail = tail
+
+
+def summary(output):
+    """`1 added, 0 changed, 0 destroyed` from apply/destroy output, or ""."""
+    m = SUMMARY.search(output)
+    return m.group(1) if m else ""
 
 
 def install_roots(home):
@@ -42,8 +56,9 @@ def install_roots(home):
 
 
 class Terraform:
-    def __init__(self, home, aws, user, env, root):
+    def __init__(self, home, aws, user, env, root, verbose=False):
         self.home = home
+        self.verbose = verbose
         self.aws = aws
         self.user = user
         self.env = env
@@ -70,6 +85,28 @@ class Terraform:
             raise TerraformError(f"terraform {args[0]} ({self.root}) failed {detail}".strip())
         return r.stdout
 
+    def _run_logged(self, *args, on_line=None):
+        """Run apply/destroy with its output in <data dir>/<command>.log (or on
+        the terminal when verbose). Returns the result summary."""
+        if self.verbose:
+            self._run(*args)
+            return ""
+        log = self.data_dir / f"{args[0]}.log"
+        cmd = ["terraform", f"-chdir={self.dir}", *args, "-no-color"]
+        lines = []
+        with open(log, "w") as f, subprocess.Popen(
+            cmd, env=self._environ(), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        ) as p:
+            for line in p.stdout:
+                f.write(line)
+                lines.append(line)
+                if on_line and line.strip():
+                    on_line(line.strip())
+        if p.returncode != 0:
+            tail = "".join(lines[-25:])
+            raise TerraformError(f"terraform {args[0]} ({self.root}) failed", log=log, tail=tail)
+        return summary("".join(lines))
+
     def init(self):
         if self._initialized:
             return
@@ -94,13 +131,13 @@ class Terraform:
         path.write_text(json.dumps(variables, indent=2))
         return f"-var-file={path}"
 
-    def apply(self, variables):
+    def apply(self, variables, on_line=None):
         self.init()
-        self._run("apply", "-input=false", "-auto-approve", self._var_file(variables))
+        return self._run_logged("apply", "-input=false", "-auto-approve", self._var_file(variables), on_line=on_line)
 
-    def destroy(self, variables):
+    def destroy(self, variables, on_line=None):
         self.init()
-        self._run("destroy", "-input=false", "-auto-approve", self._var_file(variables))
+        return self._run_logged("destroy", "-input=false", "-auto-approve", self._var_file(variables), on_line=on_line)
 
     def outputs(self):
         self.init()

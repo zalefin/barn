@@ -339,6 +339,9 @@ function with unit tests; the shell script only gathers inputs.
 Python package using `uv`; wraps terraform via subprocess and uses boto3 for
 waits, lookups and console output. boto3, terraform and the SSH ProxyCommand
 all use the developer's `aws_profile` unchanged. Runs from any directory.
+Built on Typer; output (spinners, colors, tables) goes through `barn.ui` on
+rich. Terraform apply/destroy output is written to
+`<home>/state/<user>-<env>/<root>/<command>.log` unless `-v` is given.
 
 | Command | Behavior |
 |---|---|

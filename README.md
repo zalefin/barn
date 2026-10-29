@@ -74,6 +74,11 @@ reattach later with `herdr`. Don't run herdr inside tmux.
 You can have several environments (`create dev`, `create big --size m7i.2xlarge`).
 Each has its own volume, box and state.
 
+`barn --help` (or `barn <command> --help`) lists everything, and
+`barn --install-completion` adds shell completion. Long steps show a spinner;
+Terraform's output goes to a log file instead of the terminal (`create -v` and
+`destroy -v` stream it), and a failure prints its last lines and the log path.
+
 ## Sync
 
 `sync <env>` copies these onto the box's home directory, in order:
@@ -126,7 +131,7 @@ On your laptop, in `~/.config/barn/`:
 | `accounts/<name>.toml` | Where an account's prerequisites are ([docs](docs/account-prerequisites.md)). |
 | `home/` | Synced onto your boxes. |
 | `terraform/`, `bootstrap/` | Managed: refreshed from the installed package on every run, so Terraform always runs here. Don't edit. |
-| `state/` | Terraform data dirs per environment and the provider cache. The state itself is in the account's S3 bucket. |
+| `state/` | Terraform data dirs and logs (`<user>-<env>/<root>/apply.log`) per environment, and the provider cache. The state itself is in the account's S3 bucket. |
 
 On the box:
 

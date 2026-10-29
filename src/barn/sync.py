@@ -7,9 +7,9 @@ directories are never touched.
 
 import fnmatch
 import subprocess
-import sys
+from pathlib import Path
 
-from . import ssh
+from . import ssh, ui
 from .config import BOX_USER
 
 CREDENTIAL_PATTERNS = (".credentials.json", "data.sqlite3", "*token*", "*.pem")
@@ -48,6 +48,24 @@ def rsync_cmd(src, alias):
     ]
 
 
+def changed_files(itemized):
+    """Paths rsync --itemize-changes reports as transferred (not just touched)."""
+    paths = []
+    for line in itemized.splitlines():
+        code, _, path = line.partition(" ")
+        # e.g. "<f+++++++++ .gitconfig" (new) or "<f.st...... .bashrc" (changed); "cd" lines are directories.
+        if len(code) == 11 and code[0] in "<>c" and code[1] == "f":
+            paths.append(path)
+    return paths
+
+
+def short(path):
+    try:
+        return f"~/{Path(path).relative_to(Path.home())}"
+    except ValueError:
+        return str(path)
+
+
 def sources(ctx):
     """Directories synced onto the box, in order (later ones win)."""
     shared = ctx.settings.shared_home_path
@@ -60,23 +78,29 @@ def sync(ctx, env):
 
     hits = credential_files(shared) if shared and shared.is_dir() else []
     if hits:
-        print(f"refusing to sync: credential-looking files in the shared home {shared}:", file=sys.stderr)
-        for h in hits:
-            print(f"  {h}  (move it to {ctx.home / 'home'})", file=sys.stderr)
+        ui.fail("refusing to sync: credential-looking files in the shared home", short(shared))
+        ui.block("\n".join(str(h) for h in hits))
+        ui.info("move them to", short(ctx.home / "home"))
         return 1
 
-    busy = running_agents(alias)
+    with ui.step(f"Checking {alias} for running agents"):
+        busy = running_agents(alias)
     if busy:
-        print("refusing to sync: agents are running on the box (stop them first):", file=sys.stderr)
-        print(busy, file=sys.stderr)
+        ui.fail("refusing to sync: agents are running on the box; stop them first")
+        ui.block(busy)
         return 1
 
-    for src in sources(ctx):
-        cmd = rsync_cmd(src, alias)
-        if cmd is None:
-            continue
-        print(f"syncing {src}/ -> {alias}:~/", file=sys.stderr)
-        r = subprocess.run(cmd)
-        if r.returncode != 0:
-            return r.returncode
+    srcs = [s for s in sources(ctx) if rsync_cmd(s, alias)]
+    if not srcs:
+        ui.info("nothing to sync", f"put files in {short(ctx.home / 'home')}")
+        return 0
+    for src in srcs:
+        with ui.step(f"{short(src)}/ → {alias}:~/") as st:
+            r = subprocess.run(rsync_cmd(src, alias), text=True, capture_output=True)
+            if r.returncode != 0:
+                raise RuntimeError(f"rsync failed ({r.returncode}): {r.stderr.strip()}")
+            files = changed_files(r.stdout)
+            st.result = f"{len(files)} file{'s' * (len(files) != 1)} updated" if files else "up to date"
+        if files:
+            ui.block("\n".join(files[:20]) + (f"\n… and {len(files) - 20} more" if len(files) > 20 else ""))
     return 0
