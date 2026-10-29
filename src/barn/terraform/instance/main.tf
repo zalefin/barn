@@ -22,7 +22,11 @@ locals {
     "barn:env"   = var.env
   })
 
+  # The SSH alias, <user>-<env>, as a valid hostname (user comes from $USER).
+  hostname = substr(trim(replace(lower("${var.user}-${var.env}"), "/[^a-z0-9-]+/", "-"), "-"), 0, 63)
+
   user_data = templatefile("${path.module}/../../bootstrap/user-data.sh.tftpl", {
+    hostname          = local.hostname
     ssh_public_key    = var.ssh_public_key
     passwordless_sudo = var.passwordless_sudo
     idle_hours        = var.idle_hours

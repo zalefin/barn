@@ -198,3 +198,12 @@ def test_init_copies_account_file(tmp_path, monkeypatch):
     assert load_account(home, load_settings(home).account).security_group_id == "sg-1"
     with pytest.raises(ConfigError, match="no such account file"):
         scaffold(tmp_path / "other", account_file=tmp_path / "missing.toml")
+
+
+def test_box_name_is_a_valid_hostname():
+    from barn.doctor import box_name
+
+    assert box_name("zach-dev") == "zach-dev"
+    assert box_name("John.Smith_2-dev") == "john-smith-2-dev"
+    assert box_name("_x-dev") == "x-dev"
+    assert len(box_name("a" * 80 + "-dev")) == 63

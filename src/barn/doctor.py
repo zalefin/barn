@@ -1,5 +1,6 @@
 """`doctor <env>` (PLAN.md section 12). Each check prints pass, warn, or fail."""
 
+import re
 import subprocess
 
 from botocore.config import Config
@@ -18,6 +19,8 @@ if [ -f MARKER ]; then say pass "bootstrap marker" "$(head -1 MARKER)"
 elif [ -f FAILED ]; then say fail "bootstrap marker" "failed: $(cat FAILED)"
 else say fail "bootstrap marker" "missing (still running?)"; fi
 
+if [ "$(hostname)" = BOXNAME ]; then say pass "hostname" "$(hostname)"
+else say warn "hostname" "$(hostname), expected BOXNAME; \`barn create\` sets it"; fi
 if systemctl is-active --quiet snap.amazon-ssm-agent.amazon-ssm-agent.service; then say pass "ssm agent" "running"
 else say fail "ssm agent" "snap service not active"; fi
 if snap list amazon-ssm-agent 2>/dev/null | tail -1 | grep -q held; then say pass "ssm agent refresh hold" "held"
@@ -142,6 +145,11 @@ def simulate_checks(ctx):
     return results
 
 
+def box_name(alias):
+    """The hostname first boot gives the box (mirrors the instance root's local.hostname)."""
+    return re.sub(r"[^a-z0-9-]+", "-", alias.lower()).strip("-")[:63]
+
+
 def mnt_refs(ctx):
     hits = []
     for d in sources(ctx):
@@ -213,6 +221,7 @@ def doctor(ctx, env):
         .replace("MARKER", MARKER)
         .replace("REGION", ctx.account.region)
         .replace("SYNCDIR", str(ctx.home / "home"))
+        .replace("BOXNAME", box_name(ctx.alias(env)))
     )
     try:
         with ui.step("Running checks on the box"):
