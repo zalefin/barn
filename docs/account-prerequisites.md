@@ -33,9 +33,9 @@ bucket, developer policy) is kept as a demo outside this repo, in
   `ec2messages.<region>.amazonaws.com`
 - First boot: Ubuntu apt mirrors (`<region>.ec2.archive.ubuntu.com`,
   `security.ubuntu.com`, over HTTP), the Snap Store (SSM agent refresh),
-  `download.docker.com`, and the installers at `cli.kiro.dev`, `claude.ai`,
-  `herdr.dev` and `astral.sh`, which download from further hosts (GitHub
-  release storage among them). Allowlisting hosts is not supported yet:
+  `download.docker.com`, `github.com` (Neovim), and the installers at
+  `cli.kiro.dev`, `claude.ai`, `herdr.dev` and `astral.sh`, which download
+  from further hosts (GitHub release storage among them). Allowlisting hosts is not supported yet:
   allow HTTP/HTTPS egress.
 - At run time: whatever your agents call (Anthropic, Kiro, git hosts, ...)
 

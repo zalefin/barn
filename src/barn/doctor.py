@@ -34,7 +34,7 @@ done
 if curl -sS -o /dev/null --max-time 10 https://gitlab.com 2>/dev/null; then say pass "reach gitlab.com" ""
 else say warn "reach gitlab.com" "unreachable (not needed in v1)"; fi
 
-for tool in kiro-cli claude herdr uv git docker; do
+for tool in kiro-cli claude herdr uv git docker nvim; do
   p=$(bash -lc "command -v $tool" 2>/dev/null)
   if [ -n "$p" ]; then say pass "on PATH: $tool" "$p"; else say fail "on PATH: $tool" "not found in a login shell"; fi
 done

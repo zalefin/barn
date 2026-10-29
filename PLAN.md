@@ -246,8 +246,9 @@ idempotent against an existing home volume. Order matters:
    a host-key-changed warning.
 5. `loginctl enable-linger <user>` (required so herdr's server survives SSH
    logout).
-6. apt: `git build-essential jq ripgrep unzip python3 rsync`; Docker (official
-   Docker apt repo) with the user in the `docker` group.
+6. apt: `git build-essential jq ripgrep unzip unar python3 rsync`; Docker (official
+   Docker apt repo) with the user in the `docker` group; Neovim, the latest
+   stable release from GitHub (Ubuntu's is too old for most configs).
 7. **As the user**, run the four vendor installers unpinned (they install into
    `~/.local`, which lives on the home volume):
    ```
@@ -398,7 +399,7 @@ Each check prints pass, warn, or fail; exit non-zero on any fail.
 - SSM agent snap service running; refresh hold present (warn if missing).
 - From the box: reach `cli.kiro.dev`, `claude.ai`, `herdr.dev`, `astral.sh`, and
   SSM endpoints; GitLab reachability is warn-only.
-- On PATH: `kiro-cli`, `claude`, `herdr`, `uv`, `git`, `docker`.
+- On PATH: `kiro-cli`, `claude`, `herdr`, `uv`, `git`, `docker`, `nvim`.
 - Linger enabled; home volume mounted at `/home/ubuntu`.
 - Token files present; Claude Code reports signed in.
 - SSH-over-SSM logins register with logind and have a tty (needed by idle

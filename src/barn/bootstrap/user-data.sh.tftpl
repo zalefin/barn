@@ -129,7 +129,7 @@ systemctl daemon-reload
 export DEBIAN_FRONTEND=noninteractive
 apt_retry() { for _ in 1 2 3 4 5; do "$@" && return 0; sleep 10; done; return 1; }
 apt_retry apt-get update -q || warn "apt-get update failed"
-apt_retry apt-get install -y -q git build-essential jq ripgrep unzip python3 rsync ca-certificates curl \
+apt_retry apt-get install -y -q git build-essential jq ripgrep unzip unar python3 rsync ca-certificates curl \
   || warn "apt packages failed"
 install -m 0755 -d /etc/apt/keyrings
 if curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; then
@@ -145,6 +145,17 @@ if curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/
 else
   warn "docker gpg key download failed"
 fi
+# Neovim: the latest stable release, as Ubuntu's package is too old for most
+# configs. On the root disk, so every new box gets the current release.
+NVIM_ARCH=$(uname -m | sed 's/aarch64/arm64/')
+install_nvim() {
+  curl -fsSL "https://github.com/neovim/neovim/releases/latest/download/nvim-linux-$NVIM_ARCH.tar.gz" -o /tmp/nvim.tar.gz \
+    && rm -rf /opt/nvim && mkdir -p /opt/nvim \
+    && tar -xzf /tmp/nvim.tar.gz -C /opt/nvim --strip-components=1 \
+    && ln -sf /opt/nvim/bin/nvim /usr/local/bin/nvim
+}
+apt_retry install_nvim || { warn "neovim release download failed; using Ubuntu's"; apt_retry apt-get install -y -q neovim; }
+rm -f /tmp/nvim.tar.gz
 
 # 7. Vendor installers, as the user, unpinned (they install into ~/.local, on the
 # home volume).
