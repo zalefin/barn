@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location(
-    "idle_decide", Path(__file__).parent.parent / "bootstrap" / "idle_decide.py"
+    "idle_decide", Path(__file__).parent.parent / "src" / "barn" / "bootstrap" / "idle_decide.py"
 )
 idle = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(idle)

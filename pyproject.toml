@@ -1,5 +1,5 @@
 [project]
-name = "agent-platform"
+name = "barn"
 version = "0.1.0"
 description = "Personal EC2 dev boxes for long-running agent runs"
 readme = "README.md"
@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-agent-platform = "agent_platform.cli:main"
+barn = "barn.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.13.4,<0.14.0"]
@@ -25,3 +25,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv.build-backend]
+# Terraform data dirs left by running terraform by hand inside a packaged root.
+source-exclude = [".terraform", ".state", "*.tfstate*"]

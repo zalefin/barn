@@ -1,0 +1,14 @@
+# Copy to ~/.config/barn/accounts/<name>.toml and fill in.
+# What each value must point at: docs/account-prerequisites.md
+region = "us-east-1"
+state_bucket = "my-barn-state"
+execution_instance_profile = "barn-execution"
+security_group_id = "sg-0123456789abcdef0"
+subnet_ids = ["subnet-0123456789abcdef0"]
+
+# Optional
+ami_ssm_parameter = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+developer_role_arn = ""   # role your profile's permissions come from; enables doctor's policy check
+kms_key_id = ""           # empty: AWS-managed EBS key
+
+[extra_tags]

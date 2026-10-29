@@ -1,0 +1,179 @@
+#!/bin/bash
+# barn first-boot script (PLAN.md section 8). Templated by
+# terraform/instance. Runs as root once per instance; must be idempotent against
+# a home volume that already holds a previous box's data.
+set -uo pipefail
+exec > >(tee -a /var/log/barn-bootstrap.log | logger -t barn -s 2>/dev/console) 2>&1
+
+USER_NAME=ubuntu # Ubuntu's default user (UID 1000, created by cloud-init)
+PASSWORDLESS_SUDO='${passwordless_sudo}'
+VOLUME_ID='${volume_id}'
+HOME_DIR="/home/$USER_NAME"
+STATE_DIR=/var/lib/barn
+WARNINGS=()
+
+step() { echo "barn bootstrap: $*"; }
+warn() { echo "barn bootstrap WARNING: $*"; WARNINGS+=("$*"); }
+die() { echo "barn bootstrap FAILED: $*"; mkdir -p "$STATE_DIR"; echo "$*" > "$STATE_DIR/bootstrap-failed"; exit 1; }
+
+mkdir -p "$STATE_DIR"
+rm -f "$STATE_DIR/bootstrap-done" "$STATE_DIR/bootstrap-failed"
+
+# 1. SSM agent first, so the box is reachable even if a later step fails.
+step "1 ssm agent"
+snap refresh amazon-ssm-agent || warn "snap refresh amazon-ssm-agent failed"
+# Background refreshes restart the agent and drop live sessions.
+snap refresh --hold amazon-ssm-agent || warn "snap refresh --hold failed"
+systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service || warn "ssm agent not running"
+
+# 2. Home volume, found by ID (Nitro renames devices). Attachment may lag boot.
+step "2 home volume"
+DEV="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$${VOLUME_ID//-/}"
+for _ in $(seq 1 120); do
+  [ -e "$DEV" ] && break
+  sleep 5
+done
+[ -e "$DEV" ] || die "home volume $VOLUME_ID never appeared at $DEV"
+DEV=$(readlink -f "$DEV")
+if ! blkid "$DEV" >/dev/null 2>&1; then
+  step "formatting $DEV (no filesystem)"
+  mkfs.ext4 -q -L barn-home "$DEV" || die "mkfs failed"
+  NEW_FS=1
+else
+  NEW_FS=0
+fi
+FS_UUID=$(blkid -s UUID -o value "$DEV")
+mkdir -p "$HOME_DIR"
+sed -i "\|[[:space:]]$${HOME_DIR}[[:space:]]|d" /etc/fstab
+echo "UUID=$FS_UUID $HOME_DIR ext4 defaults,nofail 0 2" >> /etc/fstab
+systemctl daemon-reload
+mountpoint -q "$HOME_DIR" || mount "$HOME_DIR" || die "mount $HOME_DIR failed"
+
+# 3. The ubuntu user. Its UID (1000) is the same on every box, so a reattached
+# volume keeps the right owner, and it matches container images that run as 1000.
+step "3 user"
+id "$USER_NAME" >/dev/null 2>&1 || die "no $USER_NAME user (cloud-init creates it)"
+if [ "$NEW_FS" = 1 ] || [ ! -e "$HOME_DIR/.bashrc" ]; then
+  cp -rn /etc/skel/. "$HOME_DIR/"
+fi
+chown "$USER_NAME:$USER_NAME" "$HOME_DIR"
+chmod 0750 "$HOME_DIR"
+install -d -m 0700 -o "$USER_NAME" -g "$USER_NAME" "$HOME_DIR/.ssh" "$HOME_DIR/.barn"
+cat > "$HOME_DIR/.ssh/authorized_keys" <<'BARN_KEY'
+${ssh_public_key}
+BARN_KEY
+chown "$USER_NAME:$USER_NAME" "$HOME_DIR/.ssh/authorized_keys"
+chmod 0600 "$HOME_DIR/.ssh/authorized_keys"
+# cloud-init gives ubuntu passwordless sudo; the account has no password, so
+# removing the rule removes sudo.
+[ "$PASSWORDLESS_SUDO" = true ] || rm -f /etc/sudoers.d/90-cloud-init-users
+# Source ~/.barn/env (synced from ~/.config/barn/home; tokens such as
+# CLAUDE_CODE_OAUTH_TOKEN) at the top of .bashrc, before Ubuntu's
+# non-interactive early return, so `ssh box cmd` (and `herdr --remote`) see
+# the tools and tokens too.
+RC="$HOME_DIR/.bashrc"
+sed -i '\|\.barn/env|d; /^# barn$/d' "$RC"
+# shellcheck disable=SC2016 # $HOME is expanded by the user's shell
+sed -i '1i export PATH="$HOME/.local/bin:$PATH"; [ -f "$HOME/.barn/env" ] \&\& . "$HOME/.barn/env" # barn env' "$RC"
+chown "$USER_NAME:$USER_NAME" "$RC"
+
+# 4. Stable SSH host keys: a recreated box keeps its identity.
+step "4 host keys"
+KEYS="$HOME_DIR/.barn/hostkeys"
+if [ -d "$KEYS" ] && ls "$KEYS"/ssh_host_*_key >/dev/null 2>&1; then
+  cp -p "$KEYS"/ssh_host_* /etc/ssh/
+  chown root:root /etc/ssh/ssh_host_*
+  chmod 0600 /etc/ssh/ssh_host_*_key
+  chmod 0644 /etc/ssh/ssh_host_*_key.pub
+  systemctl restart ssh || warn "ssh restart failed"
+else
+  install -d -m 0700 -o root -g root "$KEYS"
+  cp -p /etc/ssh/ssh_host_* "$KEYS/"
+fi
+
+# 5. Linger, so herdr's server survives SSH logout.
+step "5 linger"
+loginctl enable-linger "$USER_NAME" || warn "enable-linger failed"
+
+# 6. Packages and Docker. Docker's data-root (images, containers, volumes) lives
+# on the home volume, so a project's compose stack survives destroy/create.
+# Classic graph drivers keep images under data-root too (the containerd image
+# store would put them in /var/lib/containerd, on the root disk). Docker waits
+# for the home mount, so it never writes into an empty /home/ubuntu after boot.
+step "6 packages"
+install -d -m 0710 -o root -g root "$HOME_DIR/.barn/docker"
+install -d -m 0755 /etc/docker /etc/systemd/system/docker.service.d
+cat > /etc/docker/daemon.json <<BARN_DOCKER
+{
+  "data-root": "$HOME_DIR/.barn/docker",
+  "features": { "containerd-snapshotter": false },
+  "log-driver": "local"
+}
+BARN_DOCKER
+cat > /etc/systemd/system/docker.service.d/barn.conf <<BARN_DOCKER_UNIT
+[Unit]
+RequiresMountsFor=$HOME_DIR
+BARN_DOCKER_UNIT
+systemctl daemon-reload
+export DEBIAN_FRONTEND=noninteractive
+apt_retry() { for _ in 1 2 3 4 5; do "$@" && return 0; sleep 10; done; return 1; }
+apt_retry apt-get update -q || warn "apt-get update failed"
+apt_retry apt-get install -y -q git build-essential jq ripgrep unzip python3 rsync ca-certificates curl \
+  || warn "apt packages failed"
+install -m 0755 -d /etc/apt/keyrings
+if curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; then
+  chmod a+r /etc/apt/keyrings/docker.asc
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable" \
+    > /etc/apt/sources.list.d/docker.list
+  apt_retry apt-get update -q
+  apt_retry apt-get install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+    || warn "docker install failed"
+  usermod -aG docker "$USER_NAME"
+else
+  warn "docker gpg key download failed"
+fi
+
+# 7. Vendor installers, as the user, unpinned (they install into ~/.local, on the
+# home volume).
+step "7 vendor installers"
+as_user() { sudo -u "$USER_NAME" -H bash -lc "$1" </dev/null; }
+# Kiro's installer prompts on /dev/tty over an existing install (as on a
+# recreated box); remove what it would remove after a "y".
+rm -f "$HOME_DIR/.local/bin/kiro-cli" "$HOME_DIR/.local/bin/kiro-cli-chat"
+as_user 'curl -fsSL https://cli.kiro.dev/install | bash' || warn "kiro-cli install failed"
+as_user 'curl -fsSL https://claude.ai/install.sh | bash' || warn "claude install failed"
+as_user 'curl -fsSL https://herdr.dev/install.sh | bash' || warn "herdr install failed"
+as_user 'curl -LsSf https://astral.sh/uv/install.sh | sh' || warn "uv install failed"
+
+# 8. Idle stop (PLAN.md section 10).
+step "8 idle check"
+install -d -m 0755 /usr/local/lib/barn /etc/barn
+cat > /usr/local/lib/barn/idle-check.sh <<'BARN_IDLE_SH'
+${idle_check_sh}
+BARN_IDLE_SH
+cat > /usr/local/lib/barn/idle_decide.py <<'BARN_IDLE_PY'
+${idle_decide_py}
+BARN_IDLE_PY
+chmod 0755 /usr/local/lib/barn/idle-check.sh /usr/local/lib/barn/idle_decide.py
+cat > /etc/systemd/system/idle-check.service <<'BARN_IDLE_SVC'
+${idle_service}
+BARN_IDLE_SVC
+cat > /etc/systemd/system/idle-check.timer <<'BARN_IDLE_TMR'
+${idle_timer}
+BARN_IDLE_TMR
+cat > /etc/barn/idle.conf <<BARN_IDLE_CONF
+BARN_USER=$USER_NAME
+IDLE_HOURS=${idle_hours}
+BARN_IDLE_CONF
+systemctl daemon-reload
+systemctl enable --now idle-check.timer || warn "idle-check timer failed"
+
+# 9. Completion marker; doctor reads it.
+step "9 done"
+{
+  date -u +%Y-%m-%dT%H:%M:%SZ
+  for w in "$${WARNINGS[@]}"; do echo "warning: $w"; done
+} > "$STATE_DIR/bootstrap-done"
+step "complete with $${#WARNINGS[@]} warning(s)"

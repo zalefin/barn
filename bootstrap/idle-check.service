@@ -1,6 +1,0 @@
-[Unit]
-Description=agent-platform idle check (stops the box when idle)
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/lib/agent-platform/idle-check.sh

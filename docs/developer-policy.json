@@ -1,0 +1,163 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "Read",
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity",
+        "ssm:DescribeInstanceInformation",
+        "ec2:Describe*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadAmiParameter",
+      "Effect": "Allow",
+      "Action": "ssm:GetParameter",
+      "Resource": "arn:aws:ssm:REGION::parameter/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+    },
+    {
+      "Sid": "CreateTagged",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances",
+        "ec2:CreateVolume"
+      ],
+      "Resource": [
+        "arn:aws:ec2:REGION:ACCOUNT_ID:volume/*",
+        "arn:aws:ec2:REGION:ACCOUNT_ID:instance/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/barn": "true"
+        }
+      }
+    },
+    {
+      "Sid": "RunInstancesSupportingResources",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:REGION:ACCOUNT_ID:subnet/SUBNET_ID_2",
+        "arn:aws:ec2:REGION:ACCOUNT_ID:subnet/SUBNET_ID_1",
+        "arn:aws:ec2:REGION:ACCOUNT_ID:security-group/SECURITY_GROUP_ID",
+        "arn:aws:ec2:REGION:ACCOUNT_ID:network-interface/*",
+        "arn:aws:ec2:REGION::image/*"
+      ]
+    },
+    {
+      "Sid": "TagOnCreate",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": [
+        "arn:aws:ec2:REGION:ACCOUNT_ID:volume/*",
+        "arn:aws:ec2:REGION:ACCOUNT_ID:network-interface/*",
+        "arn:aws:ec2:REGION:ACCOUNT_ID:instance/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": [
+            "RunInstances",
+            "CreateVolume"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ManageTagged",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:TerminateInstances",
+        "ec2:StopInstances",
+        "ec2:StartInstances",
+        "ec2:ModifyInstanceAttribute",
+        "ec2:GetConsoleOutput",
+        "ec2:DetachVolume",
+        "ec2:DeleteVolume",
+        "ec2:AttachVolume"
+      ],
+      "Resource": [
+        "arn:aws:ec2:REGION:ACCOUNT_ID:volume/*",
+        "arn:aws:ec2:REGION:ACCOUNT_ID:instance/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/barn": "true"
+        }
+      }
+    },
+    {
+      "Sid": "PassExecutionRole",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "EXECUTION_ROLE_ARN",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "ec2.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "StartSshSessionOnTagged",
+      "Effect": "Allow",
+      "Action": "ssm:StartSession",
+      "Resource": "arn:aws:ec2:REGION:ACCOUNT_ID:instance/*",
+      "Condition": {
+        "BoolIfExists": {
+          "ssm:SessionDocumentAccessCheck": "true"
+        },
+        "StringEquals": {
+          "ssm:resourceTag/barn": "true"
+        }
+      }
+    },
+    {
+      "Sid": "StartSshSessionDocument",
+      "Effect": "Allow",
+      "Action": "ssm:StartSession",
+      "Resource": "arn:aws:ssm:REGION::document/AWS-StartSSHSession",
+      "Condition": {
+        "BoolIfExists": {
+          "ssm:SessionDocumentAccessCheck": "true"
+        }
+      }
+    },
+    {
+      "Sid": "OwnSessions",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:TerminateSession",
+        "ssm:ResumeSession"
+      ],
+      "Resource": "arn:aws:ssm:*:ACCOUNT_ID:session/${aws:userid}-*"
+    },
+    {
+      "Sid": "StateList",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::STATE_BUCKET",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": "env/*"
+        }
+      }
+    },
+    {
+      "Sid": "StateObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::STATE_BUCKET/env/*"
+    },
+    {
+      "Sid": "Doctor",
+      "Effect": "Allow",
+      "Action": "iam:SimulatePrincipalPolicy",
+      "Resource": "DEVELOPER_ROLE_ARN"
+    }
+  ]
+}

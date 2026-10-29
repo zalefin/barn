@@ -1,5 +1,3 @@
-home.local/
-.agent-platform.local.toml
 .state/
 .venv/
 *.tfstate*

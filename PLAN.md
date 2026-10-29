@@ -1,10 +1,14 @@
-# agent-platform — implementation plan
+# barn — implementation plan
 
 ## 0. Read this first (for agents)
 
 - **Status (2026-10-25):** M0–M8 implemented and tested in the personal
   account on t3.micro boxes (user's request; the default stays m7i.xlarge).
   See section 18 for collected facts and deviations from this spec.
+- **2026-10-29:** the platform layer was removed and the CLI became an
+  installable tool (section 20), then the project was renamed from
+  agent-platform to **barn** (section 21). Sections 2–12 describe the current design;
+  sections 13–19 are history.
 - **Source of truth:** this file. `docs/design-log.md` is the verbatim interview
   history with question numbers (Q1–Q47); some of its entries are superseded.
   Use it only to understand *why*. Where they disagree, this file wins.
@@ -29,9 +33,9 @@
    - The managed account (profile `managed-dev`) is **read-only and narrow**: the
      user authorized inspecting the developer role only. Do not list or describe
      other resources there without asking. Never apply anything there; the
-     platform layer is handed to the platforms team.
+     account prerequisites are handed to the platforms team.
 4. **Secrets:** never write real tokens or credentials into tracked paths. They
-   belong only in `home.local/` (gitignored) and on the box.
+   belong only in `~/.config/barn/home/` and on the box.
 5. **Unpinned tools are intentional.** Do not add version pins to vendor install
    scripts (user decision).
 
@@ -43,10 +47,14 @@ through SSM, push their personal config and OAuth tokens to them, and run Kiro
 CLI and Claude Code under **herdr** for long-running headless agent runs they
 detach from and come back to.
 
+The tool manages **only** per-environment home volumes and EC2 instances. It
+assumes the account's network, security group, instance profile, state bucket
+and developer permissions already exist (docs/account-prerequisites.md).
+
 Two deployment targets, same code:
 - **Personal AWS account** (full control): the user tests everything here first.
 - **Managed account** (`managed-dev`, us-east-1): the platforms team
-  applies the platform layer; developers use their existing SSO role.
+  provides the prerequisites; developers use their existing SSO role.
 
 **Out of scope for v1:** GitLab integration (the box uses a local `git init`
 only), notifications when runs finish, backups or snapshots of any kind, version
@@ -57,98 +65,68 @@ pinning, a baked AMI, a CloudFormation version of the platform layer, Graviton.
 ```
 laptop (WSL)                                     AWS account
 ------------                                     -----------
-agent-platform CLI (uv) --terraform--> S3 state bucket (env/<user>/<env>/...)
+barn CLI (uv tool) -terraform-> S3 state bucket (env/<user>/<env>/...)
         |                              volume root  -> EBS gp3 (holds /home/ubuntu)
         |                              instance root -> EC2 Ubuntu 24.04
         |                                                  + execution instance profile
         +--ssh (ProxyCommand: aws ssm start-session        + zero-inbound security group
              --document-name AWS-StartSSHSession) -----> sshd on box
-        +--rsync over that ssh: home/ then home.local/ --> /home/ubuntu
+        +--rsync over that ssh: shared_home, then ~/.config/barn/home/ --> /home/ubuntu
 developer on box: `herdr` -> panes running claude / kiro-cli
 on-box systemd timer: idle check -> `shutdown` (instance stops, volume kept)
 ```
 
-Three Terraform roots:
-- `terraform/platform` — once per account, applied by an admin with plain
-  terraform. The CLI never touches it.
-- `terraform/volume` — per environment, applied by the CLI.
-- `terraform/instance` — per environment, applied by the CLI. Destroying it
-  leaves the volume (and the home directory) intact.
+Two Terraform roots, shipped inside the Python package and copied into
+`~/.config/barn/terraform/` on every run (terraform always runs there):
+- `volume` — per environment.
+- `instance` — per environment. Destroying it leaves the volume (and the home
+  directory) intact.
+
+Account setup is out of scope. A demo implementation of the prerequisites
+(formerly `terraform/platform`) lives outside this repo in
+`~/source/barn-platform-minimal`.
 
 ## 4. Repo layout
 
 ```
 PLAN.md                     this file
 README.md                   developer quickstart
-pyproject.toml, uv.lock     the CLI (console script: agent-platform)
-src/agent_platform/         CLI package
+pyproject.toml, uv.lock     the CLI (console script: barn; `uv tool install`)
+src/barn/         CLI package
+  terraform/volume/         per-env root (package data)
+  terraform/instance/       per-env root (package data)
+  bootstrap/
+    user-data.sh.tftpl      first-boot script (templated by the instance root)
+    idle-check.sh           on-box idle logic (installed by user-data)
+    idle-check.service/.timer
 tests/                      pytest
-terraform/
-  platform/                 admin-applied root (+ README for the platforms team)
-  modules/developer-policy/ standalone module: developer IAM policy + JSON output
-  volume/                   per-env root
-  instance/                 per-env root
-bootstrap/
-  user-data.sh.tftpl        first-boot script (templated by the instance root)
-  idle-check.sh             on-box idle logic (installed by user-data)
-  idle-check.service/.timer
-accounts/
-  personal.toml             written from platform outputs (committed)
-  managed.toml          ditto, once the platforms team applies
-home/                       committed shared defaults synced onto the box
-home.local/                 GITIGNORED personal overlay (tokens, personal config)
-.agent-platform.local.toml  GITIGNORED per-developer settings
-.state/                     GITIGNORED terraform data dirs per env
 docs/
+  account-prerequisites.md  what an account must provide; the account file
+  developer-policy.json     the developer IAM policy, with placeholders
   design-log.md             interview history (historical)
+examples/                   config.toml and account.toml to copy
 ```
 
-`.gitignore` must contain at least: `home.local/`, `.agent-platform.local.toml`,
-`.state/`, `.venv/`, `*.tfstate*`, `.terraform/`.
+Local, per developer (`~/.config/barn/`, or `$BARN_HOME`):
 
-## 5. Platform root (`terraform/platform`)
+```
+config.toml                 settings (section 11.2)
+accounts/<name>.toml        account file (section 11.1)
+home/                       personal overlay synced onto the box (tokens, config)
+terraform/, bootstrap/      managed copies of the package's roots; never edited
+state/<user>-<env>/<root>/  TF_DATA_DIR per environment and root
+state/plugin-cache/         TF_PLUGIN_CACHE_DIR
+```
 
-**Creates:**
-- **Execution role + instance profile.** Trusts `ec2.amazonaws.com`. Attaches
-  `AmazonSSMManagedInstanceCore`. Admins attach further policies later;
-  developers cannot modify it. Agents on the box use this role, never copied
-  developer credentials.
-- **State bucket.** Versioning on, public access blocked, SSE on. Terraform uses
-  S3 native locking (`use_lockfile = true`; no DynamoDB). Terraform ≥ 1.10.
-- **Security group.** Zero inbound rules. Egress all (needed for SSM, the
-  vendor install scripts, apt, Docker).
-- **Network**, by `vpc_mode`:
-  - `create`: minimal VPC, one public subnet per listed AZ, internet gateway,
-    public IPs on launch (still zero inbound).
-  - `attach`: takes `vpc_id` and `subnet_ids` as variables, creates nothing.
-- **Developer permissions**, by `developer_role_mode`:
-  - `create` (fresh account): creates an `agent-platform-developer` role that
-    trusts `trusted_principal_arns`, attaches the developer policy. The CLI
-    assumes this role.
-  - `attach` (existing account): creates the developer policy as a
-    customer-managed policy and attaches it to `existing_role_name`. The CLI
-    uses the developer's own login with no extra role hop.
-  - *integrate* (not a mode; a handoff path): the platforms team calls
-    `terraform/modules/developer-policy` from their own Terraform, or copies its
-    `policy_json` output, and skips this root's role resources. The platform
-    README recommends this for any role reconciled by central automation (e.g.
-    `AWSReservedSSO_*`), because a policy attached outside that automation may be
-    silently removed.
+## 5. Account prerequisites (not managed by this tool)
 
-**Variables:** `region`, `name_prefix` (default `agent-platform`), `vpc_mode`,
-`vpc_id`, `subnet_ids`, `azs`, `developer_role_mode`, `trusted_principal_arns`,
-`existing_role_name`, `ami_ssm_parameter` (default the Canonical Ubuntu 24.04
-amd64 gp3 parameter), `kms_key_id` (optional; default AWS-managed EBS
-encryption), `extra_tags` (map, merged into every resource's tags).
-
-**Output:** `account_file` — the full text of `accounts/<name>.toml` (section
-11.1). The admin pastes it into the repo.
-
-**Platform README** (for the platforms team) must list every resource, every IAM
-action and why it is needed, the two modes and the integrate path, and ask
-explicitly: approved AMI requirements, required agents (patching, Inspector),
-mandatory tags, required KMS key, which VPC/subnets to attach to, and whether the
-subnet has egress to the internet (install scripts) and to SSM endpoints.
+The CLI assumes these exist; docs/account-prerequisites.md is the full contract:
+subnets with egress to the internet and the SSM endpoints, a security group
+(no inbound needed), an EC2 instance profile with `AmazonSSMManagedInstanceCore`,
+an S3 state bucket, an Ubuntu 24.04 AMI SSM parameter, and an AWS CLI profile
+per developer carrying the developer policy (section 6.2). The CLI never
+creates, assumes or modifies IAM roles; if the permissions live on a role, the
+developer's AWS CLI profile assumes it.
 
 ## 6. IAM
 
@@ -156,26 +134,26 @@ subnet has egress to the internet (install scripts) and to SSM endpoints.
 
 | Key | Value |
 |---|---|
-| `agent-platform` | `true` |
-| `agent-platform:owner` | developer username |
-| `agent-platform:env` | environment name |
+| `barn` | `true` |
+| `barn:owner` | developer username |
+| `barn:env` | environment name |
 
 Plus `extra_tags` from the account file.
 
-### 6.2 Developer policy (`modules/developer-policy`)
+### 6.2 Developer policy (`docs/developer-policy.json`)
 
-Scoped so developers can only touch resources tagged `agent-platform=true`:
+Scoped so developers can only touch resources tagged `barn=true`:
 
 - **Read:** `ec2:Describe*`, `ssm:GetParameter` on the AMI public parameter,
   `sts:GetCallerIdentity`.
 - **Create:** `ec2:RunInstances` and `ec2:CreateVolume` require
-  `aws:RequestTag/agent-platform = true` on instance/volume/network-interface
+  `aws:RequestTag/barn = true` on instance/volume/network-interface
   resources; `ec2:CreateTags` allowed only when `ec2:CreateAction` is
   `RunInstances` or `CreateVolume`. RunInstances also needs the subnet, security
   group, and image resources (unconditioned).
 - **Manage:** `StartInstances`, `StopInstances`, `TerminateInstances`,
   `ModifyInstanceAttribute`, `AttachVolume`, `DetachVolume`, `DeleteVolume`,
-  `GetConsoleOutput` require `aws:ResourceTag/agent-platform = true`.
+  `GetConsoleOutput` require `aws:ResourceTag/barn = true`.
 - **PassRole:** `iam:PassRole` on the execution role ARN only, with
   `iam:PassedToService = ec2.amazonaws.com`.
 - **SSM (user decision: SSH is forced, SSM only provides the tunnel):**
@@ -201,8 +179,8 @@ A policy simulation showed it **cannot** do `ec2:RunInstances`, `CreateVolume`,
 `Start/Stop/TerminateInstances`, `CreateSecurityGroup`, `CreateVpc`,
 `ssm:StartSession`, `s3:CreateBucket`, `s3:PutObject`, or IAM role creation. It
 **can** do `iam:PassRole` and `cloudwatch:PutMetricAlarm`. So in the managed
-account nothing works until the platforms team applies the platform layer in
-`attach` mode or integrates the developer policy.
+account nothing works until the platforms team provides the prerequisites and
+attaches the developer policy.
 
 ## 7. Environment roots
 
@@ -211,9 +189,11 @@ account nothing works until the platforms team applies the platform layer in
 - Environment ID: `<user>-<env>`. A developer may have several.
 - State keys: `env/<user>/<env>/volume.tfstate` and
   `env/<user>/<env>/instance.tfstate`, passed with `-backend-config` at init.
-- The CLI runs terraform with `-chdir=terraform/<root>` and
-  `TF_DATA_DIR=.state/<user>-<env>/<root>` so environments never share a
-  `.terraform` directory.
+- The CLI copies the packaged roots into `~/.config/barn/terraform/`
+  (only changed files, atomically) and runs terraform with
+  `-chdir=<home>/terraform/<root>` and
+  `TF_DATA_DIR=<home>/state/<user>-<env>/<root>`, so environments never share a
+  `.terraform` directory and the location never depends on a checkout.
 
 ### 7.2 Volume root
 
@@ -260,7 +240,7 @@ idempotent against an existing home volume. Order matters:
    the SSH public key into `~/.ssh/authorized_keys`. Passwordless sudo via
    `/etc/sudoers.d/` only if `passwordless_sudo` is true.
 4. **[SPEC] Stable SSH host keys:** if
-   `/home/ubuntu/.agent-platform/hostkeys/` exists (root-owned, 0700), copy those
+   `/home/ubuntu/.barn/hostkeys/` exists (root-owned, 0700), copy those
    keys into `/etc/ssh`; otherwise save the freshly generated keys there.
    Recreated instances then keep the same host identity, so SSH does not raise
    a host-key-changed warning.
@@ -277,7 +257,7 @@ idempotent against an existing home volume. Order matters:
    curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
 8. Install `idle-check.sh` and its systemd service and timer (section 10).
-9. Write a completion marker `/var/lib/agent-platform/bootstrap-done` with a
+9. Write a completion marker `/var/lib/barn/bootstrap-done` with a
    timestamp. `doctor` reads it; on failure the CLI fetches the boot log with
    `ec2:GetConsoleOutput`.
 
@@ -287,8 +267,8 @@ herdr is **not** started at boot. The developer runs `herdr` after SSH.
 
 ### 9.1 SSH over SSM
 
-The CLI writes a managed file `~/.ssh/agent-platform.conf` and makes sure
-`~/.ssh/config` has `Include agent-platform.conf` at the top. One entry per
+The CLI writes a managed file `~/.ssh/barn.conf` and makes sure
+`~/.ssh/config` has `Include barn.conf` at the top. One entry per
 environment:
 
 ```
@@ -298,23 +278,23 @@ Host <user>-<env>
   ProxyCommand aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p --profile <profile> --region <region>
 ```
 
-In `create` role mode, the CLI also writes an AWS CLI profile
-`agent-platform-<account>` with `role_arn` and `source_profile`, and the
-ProxyCommand uses it. The instance ID changes on recreate; the CLI rewrites the
-entry.
+`<profile>` is the developer's `aws_profile`. The instance ID changes on
+recreate; the CLI rewrites the entry.
 
 ### 9.2 Sync (`sync <env>`)
 
-- `rsync` over the SSH entry: first `home/`, then `home.local/`, onto
-  `/home/ubuntu`. **Repo always wins** for files it contains. **Never deletes**
-  remote files. Never touches paths not present in those directories.
+- `rsync` over the SSH entry: first the optional `shared_home` (team
+  defaults), then `~/.config/barn/home/`, onto `/home/ubuntu`.
+  **Local always wins** for files it contains. **Never deletes** remote files.
+  Never touches paths not present in those directories. Top-level `README.md`
+  is skipped.
 - Refuses to run if `claude` or `kiro-cli` processes are running on the box
   (Kiro's SQLite file would race the live process).
-- Refuses if `git` reports untracked files under `home/` matching credential
-  patterns (`.credentials.json`, `data.sqlite3`, `*token*`, `*.pem`).
+- Refuses if `shared_home` contains files matching credential patterns
+  (`.credentials.json`, `data.sqlite3`, `*token*`, `*.pem`).
 - Does not rewrite paths; `doctor` warns on `/mnt/` references.
 
-What developers typically put in `home.local/` (paths relative to home):
+What developers typically put in `~/.config/barn/home/` (paths relative to home):
 
 | Path | What |
 |---|---|
@@ -324,11 +304,10 @@ What developers typically put in `home.local/` (paths relative to home):
 | `.local/share/kiro-cli/data.sqlite3` | Kiro auth token (whole file; also holds history) |
 | `.gitconfig` | git identity |
 | `.config/herdr/config.toml` | herdr config |
-| `.agent-platform/env` | exported env vars, sourced from `.bashrc` |
+| `.barn/env` | exported env vars, sourced from `.bashrc` |
 
 **Never sync** the rest of `~/.local/share/kiro-cli/` (about 200 MB of bundled
-`bun`, `node`, `tui.js` runtimes). The README must say so; `home/` ships a
-README telling developers how to populate `home.local/`.
+`bun`, `node`, `tui.js` runtimes). The README must say so.
 
 Tokens exist only on the laptop and the box. Never in SSM Parameter Store or
 Secrets Manager. Accepted risk: refresh-token rotation may invalidate one copy.
@@ -340,13 +319,13 @@ A root systemd timer runs every 5 minutes. The box is **active** if any holds:
 1. A herdr agent is working (queried as the user via herdr's CLI/socket,
    `~/.config/herdr/herdr.sock`).
 2. A herdr agent has been blocked for less than 24 hours. The script records
-   first-seen-blocked time per pane in `/var/lib/agent-platform/`.
+   first-seen-blocked time per pane in `/var/lib/barn/`.
 3. A systemd-logind session has been idle for less than 30 minutes
    (`loginctl show-session <id> -p IdleHint -p IdleSinceHint`). This comes from
    the terminal device's access timestamp; no keystroke content is recorded.
 4. A herdr pane's foreground process is not its shell (from `/proc`,
    independent of herdr's API).
-5. `~/.agent-platform/hold-until` holds a future timestamp (written by `hold`).
+5. `~/.barn/hold-until` holds a future timestamp (written by `hold`).
 
 Not signals: CPU, running Docker containers, merely open sessions.
 
@@ -355,12 +334,11 @@ re-check, then `shutdown -h now` (instance stops; volume kept). **Fail safe:** i
 the herdr query errors, treat the box as active. The decision logic is a pure
 function with unit tests; the shell script only gathers inputs.
 
-## 11. CLI (`agent-platform`, run with `uv run agent-platform ...`)
+## 11. CLI (`barn`, installed with `uv tool install`)
 
 Python package using `uv`; wraps terraform via subprocess and uses boto3 for
-waits, lookups, console output, and role assumption. In `create` role mode it
-assumes the developer role before each command (chained sessions are capped at
-1 hour, so assume per command).
+waits, lookups and console output. boto3, terraform and the SSH ProxyCommand
+all use the developer's `aws_profile` unchanged. Runs from any directory.
 
 | Command | Behavior |
 |---|---|
@@ -371,24 +349,26 @@ assumes the developer role before each command (chained sessions are capped at
 | `ssh <env>` | exec `ssh <user>-<env>`. |
 | `sync <env>` | section 9.2. |
 | `doctor <env>` | section 12. |
-| `hold <env> <duration>` | writes `~/.agent-platform/hold-until` on the box over SSH. |
+| `hold <env> <duration>` | writes `~/.barn/hold-until` on the box over SSH. |
 
-### 11.1 Account file (`accounts/<name>.toml`, committed)
+### 11.1 Account file (`~/.config/barn/accounts/<name>.toml`)
+
+Hand-written or handed out by whoever owns the account. Unknown or missing
+keys are errors.
 
 ```toml
-name = "personal"
 region = "us-east-1"
 state_bucket = "..."
-developer_role_arn = ""           # set in create mode; empty in attach mode
 execution_instance_profile = "..."
 security_group_id = "sg-..."
 subnet_ids = ["subnet-..."]
-ami_ssm_parameter = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
-kms_key_id = ""
+ami_ssm_parameter = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"  # optional, default shown
+developer_role_arn = ""           # optional: role doctor simulates the policy on
+kms_key_id = ""                   # optional
 [extra_tags]
 ```
 
-### 11.2 Local settings (`.agent-platform.local.toml`, gitignored)
+### 11.2 Local settings (`~/.config/barn/config.toml`)
 
 ```toml
 account = "personal"              # selects accounts/<account>.toml
@@ -398,15 +378,18 @@ ssh_public_key = "~/.ssh/id_ed25519.pub"
 default_size = "m7i.xlarge"
 passwordless_sudo = true
 idle_hours = 4
+volume_gb = 100
+shared_home = ""                  # optional team defaults dir, synced first
 ```
 
 ## 12. `doctor <env>`
 
 Each check prints pass, warn, or fail; exit non-zero on any fail.
 
-- AWS credentials valid; developer role assumable (create mode).
-- IAM policy simulation of section 6.2 actions on the caller's role (catches a
-  silently removed policy).
+- AWS credentials valid (via `aws_profile`).
+- IAM policy simulation of section 6.2 actions on the account file's
+  `developer_role_arn` (catches a silently removed policy); skipped with a
+  warning when unset. A role that allows shell sessions is a warning.
 - Instance running; SSM reports it online.
 - Bootstrap marker present; if not, show the console output tail.
 - SSM agent snap service running; refresh hold present (warn if missing).
@@ -468,8 +451,8 @@ notifications.
   pre-1.0 herdr, Kiro, and Claude Code.
 - Copied OAuth refresh tokens may invalidate one side on rotation and kill a run.
 - No backups; the home volume holds unpushed work.
-- Managed-account self-serve depends entirely on the platforms team applying the
-  platform layer.
+- Managed-account self-serve depends entirely on the platforms team providing the
+  account prerequisites.
 - Kiro's `data.sqlite3` schema is undocumented; copied whole while Kiro is
   stopped.
 - herdr is pre-1.0 and reportedly unstable nested inside tmux; don't wrap it in
@@ -512,12 +495,12 @@ notifications.
 - **logind:** SSH-over-SSM logins register as `Class=user` sessions with
   `TTY=pts/N`, so idle signal 3 works.
 - **Auth:** the user chose env-var tokens, `CLAUDE_CODE_OAUTH_TOKEN` and
-  `KIRO_API_KEY`, in `home.local/.agent-platform/env`. Both sign in.
+  `KIRO_API_KEY`, in `home.local/.barn/env`. Both sign in.
   `claude auth status` and `kiro-cli whoami` are the doctor checks.
 
 ### Deviations and additions
 
-- `ssm:StartSession` on instances uses `ssm:resourceTag/agent-platform`
+- `ssm:StartSession` on instances uses `ssm:resourceTag/barn`
   (StartSession does not match on `aws:ResourceTag`), and
   `ssm:SessionDocumentAccessCheck` uses `BoolIfExists`. Verified: the
   SSH document works; the default shell document, port forwarding, and
@@ -527,17 +510,17 @@ notifications.
   tag the ENI at launch).
 - Account file adds `developer_policy_role_arn` (the role `doctor` simulates,
   in both role modes).
-- Local settings add `volume_gb` (default 100). `AGENT_PLATFORM_SETTINGS`
+- Local settings add `volume_gb` (default 100). `BARN_SETTINGS`
   overrides the settings file path (one checkout acting as several developers).
-- The SSH AWS profile is `agent-platform-<account>-<user>`, not
-  `agent-platform-<account>`, so two developers can share a laptop.
+- The SSH AWS profile is `barn-<account>-<user>`, not
+  `barn-<account>`, so two developers can share a laptop.
 - SSH entries use `HostKeyAlias <user>-<env>` so the stable host key is checked
   across recreates (the HostName instance ID changes).
 - The instance ignores AMI changes (a new Ubuntu release must not replace the
   box). Changing user data replaces the box (`user_data_replace_on_change`).
-  `idle_hours` is written to `/etc/agent-platform/idle.conf`.
+  `idle_hours` is written to `/etc/barn/idle.conf`.
 - `.bashrc` line 1 (before Ubuntu's non-interactive return) puts `~/.local/bin`
-  on PATH and sources `~/.agent-platform/env`, so `ssh box cmd` and
+  on PATH and sources `~/.barn/env`, so `ssh box cmd` and
   `herdr --remote` work.
 - The box user is always `ubuntu` (UID 1000); local settings have no `uid`.
   `passwordless_sudo = false` removes cloud-init's sudoers rule.
@@ -566,11 +549,48 @@ notifications.
   `admin`). The admin applies `terraform/platform` with `demo.tfvars` (create
   VPC mode, create role mode trusting `user/zach`); `accounts/demo.toml` is the
   output. The developer CLI uses the same profile as its source profile and
-  assumes `agent-platform-developer`, so it runs with the scoped policy only.
+  assumes the developer role, so it runs with the scoped policy only.
 - Box size m7i.xlarge (4 vCPU, 16 GiB), the default.
 - Docker's data-root moved to the home volume
-  (`/home/ubuntu/.agent-platform/docker`, root-owned 0710), with
+  (`/home/ubuntu/.barn/docker`, root-owned 0710), with
   `containerd-snapshotter` off so images stay under data-root, and a
   `RequiresMountsFor=/home/ubuntu` drop-in on `docker.service`. Project compose
   stacks (niflow-canvas: NiFi cluster, Airflow, Postgres) keep their images and
   volumes across `destroy`/`create`. `doctor` checks the data-root.
+
+## 20. Platform layer removed; installable CLI (2026-10-29)
+
+- `terraform/platform`, `terraform/modules/developer-policy` and
+  `terraform/test-users` moved out of this repo to
+  `~/source/barn-platform-minimal` (demo only), with the generated
+  account files. This repo documents the prerequisites instead
+  (docs/account-prerequisites.md; the policy is rendered from the old module
+  into docs/developer-policy.json).
+- The CLI no longer assumes the developer role or writes AWS CLI profiles. Role
+  modes are gone; developers configure role assumption in their AWS profile.
+  `developer_policy_role_arn` is gone; `developer_role_arn` now only names the
+  role `doctor` simulates. "Policy denies shell sessions" is a warning, not a
+  failure, so broader existing roles pass.
+- Installable with `uv tool install`: the volume and instance roots and
+  `bootstrap/` are package data under `src/barn/`, copied into
+  `~/.config/barn/` on each run. Settings, account files and the
+  synced home overlay live there too; no repo checkout is needed.
+- Sync: the committed `home/` + gitignored `home.local/` pair became optional
+  `shared_home` (credential-guarded) + `~/.config/barn/home/`.
+
+## 21. Renamed to barn (2026-10-29)
+
+- Repo and GitLab project `zach/agent-platform` -> `zach/barn`; Python package
+  `barn`, console script `barn`.
+- Renamed throughout, including the wire identifiers: AWS tags (`barn`,
+  `barn:owner`, `barn:env`, Name `barn-<user>-<env>`) and the developer
+  policy's tag conditions, on-box paths (`~/.barn/`, `/var/lib/barn`,
+  `/etc/barn`, `/usr/local/lib/barn`), local paths (`~/.config/barn/`,
+  `BARN_HOME`, `BARN_SETTINGS`, `~/.ssh/barn.conf`). State keys are unchanged.
+- No migration: nothing depended on the old names. Environments created before
+  the rename are not found by barn; destroy them with the old version.
+- The demo platform (`~/source/barn-platform-minimal`) was renamed too: its
+  resources are named `barn-*` (`barn-attach-*` for the attach stack), so
+  re-applying a stack created before the rename recreates its resources. Its
+  account files were dropped; regenerate them with `terraform output`.
+

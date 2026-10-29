@@ -1,0 +1,10 @@
+# Copy to ~/.config/barn/config.toml and edit.
+account = "personal"              # selects ~/.config/barn/accounts/<account>.toml
+aws_profile = "my-profile"        # AWS CLI profile with the developer permissions (may assume a role)
+user = "zach"                     # owner tag and env prefix (ssh zach-dev); default $USER
+ssh_public_key = "~/.ssh/id_ed25519.pub"
+default_size = "m7i.xlarge"       # 4 vCPU, 16 GiB
+passwordless_sudo = true
+idle_hours = 4
+volume_gb = 100
+# shared_home = "~/src/team-dotfiles/home"   # optional team defaults, synced before your own home/
