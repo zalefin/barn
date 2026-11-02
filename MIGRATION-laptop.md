@@ -9,12 +9,10 @@ print or write secrets into tracked files.
 
 ## 1. Where things stand
 
-- **Code:** the section 23 work is **uncommitted** on the devbox
-  (`zach@devbox`: `~/source/barn`, `~/source/barn-platform-minimal`; remotes
-  `git@git.example.com:zach/barn.git` and `.../barn-platform-minimal.git`).
-  The user commits and pushes when they choose. **Precondition:** the laptop's
-  checkout has section 23 (`grep -q "### 23.10" PLAN.md`, `barn --help` lists
-  `connect`). If not, stop and ask the user to push it.
+- **Code:** the section 23 work is pushed to `main` on
+  `git@git.example.com:zach/barn.git` (9a50624) and
+  `.../barn-platform-minimal.git` (1500bea). Pull both on the laptop first;
+  `barn --help` must list `connect`.
 - **Sandbox account 123456789012, us-east-1:**
   - IAM roles `barn-manager` and `barn-guest`.
   - IAM users: `zach` (admin; trusted by both roles), and the test users
