@@ -188,7 +188,7 @@ def test_connect_writes_entry_and_reports_state(tmp_path, monkeypatch, capsys):
     assert "HostName i-9" in (tmp_path / ".ssh" / "barn.conf").read_text()
     err = capsys.readouterr().err
     assert "zach-dev is stopped" in err and "barn start zach-dev" in err
-    with pytest.raises(ConfigError, match="no box named 'nope' in account sandbox.*--account"):
+    with pytest.raises(ConfigError, match="no box named 'nope' in account sandbox; `barn list`"):
         cli.connect(ctx, "nope")
     with pytest.raises(ConfigError, match="bad box name"):
         cli.connect(ctx, "Bad_Name")
@@ -256,6 +256,49 @@ def test_list_spans_accounts_and_names_each_rows_account(tmp_path, monkeypatch, 
     # Asked for by name, a failing account is an error.
     with pytest.raises(TokenRetrievalError):
         cli.list_boxes("expired", make_context=make)
+
+
+def test_box_commands_find_the_boxs_account(tmp_path, monkeypatch, capsys):
+    from botocore.exceptions import TokenRetrievalError
+
+    monkeypatch.setenv("BARN_HOME", str(tmp_path))
+    monkeypatch.delenv("BARN_SETTINGS", raising=False)
+    (tmp_path / "accounts").mkdir()
+    for name in ("bullpen", "expired", "sandbox", "work"):
+        (tmp_path / "accounts" / f"{name}.toml").write_text("")
+    (tmp_path / "config.toml").write_text('config_version = "0.3.0"\ndefault_account = "sandbox"\nuser = "zach"\n')
+    ec2s = {
+        "sandbox": FakeEc2([instance("zach-a2n", "zach", "i-1")], [volume("both", "zach")]),
+        # A box whose instance is gone still has its home volume.
+        "bullpen": FakeEc2([instance("andrew-ws", "andrew", "i-2")], [volume("zach-old", "zach"), volume("twice", "a")]),
+        "work": FakeEc2([instance("both", "zach", "i-3")], [volume("twice", "b")]),
+    }
+
+    def make(name):
+        if name == "expired":
+            raise TokenRetrievalError(provider="sso", error_msg="Token has expired")
+        return FakeCtx(ec2s[name], account=name)
+
+    def account(name, **kw):
+        return cli.box_context(name, make_context=make, **kw).account.name
+
+    assert account("andrew-ws") == "bullpen"
+    assert account("zach-old") == "bullpen"
+    assert account("zach-a2n") == "sandbox"
+    assert account("both") == "sandbox"  # default_account wins
+    assert account("andrew-ws", account="work") == "work"  # --account is taken as given
+    with pytest.raises(ConfigError, match="twice is in accounts bullpen, work; pick one with --account"):
+        account("twice")
+    assert capsys.readouterr().err == ""
+
+    # A new box goes in default_account; it is not found anywhere.
+    ctx = cli.box_context("zach-new", make_context=make)
+    assert ctx.account.name == "sandbox"
+    assert "could not look for zach-new in account expired" in capsys.readouterr().err
+    with pytest.raises(ConfigError, match=r"no box named 'zach-new' in any account \(sandbox, bullpen, work\)"):
+        ctx.require_instance("zach-new")
+    with pytest.raises(ConfigError, match="no box named 'zach-new' in account work;"):
+        cli.box_context("zach-new", account="work", make_context=make).require_instance("zach-new")
 
 
 # --- guest keys ---

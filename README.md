@@ -54,7 +54,7 @@ the account's network, roles and state bucket are
 `[aws_profiles]` in `config.toml`:
 
 ```toml
-default_account = "sandbox"   # used when a command has no --account
+default_account = "sandbox"   # where new boxes go without --account
 
 [aws_profiles]
 sandbox = "barn-zach-manager"
@@ -62,8 +62,11 @@ work = "barn-zach-work"
 ```
 
 The profile is used as-is by boto3, Terraform and SSH; put the role in the
-profile (`role_arn` + `source_profile`, or SSO). Every box command takes
-`--account <account>`, and `barn list` shows the boxes of every account.
+profile (`role_arn` + `source_profile`, or SSO). `barn list` shows the boxes
+of every account, and box commands find a box in whichever account has it
+(`default_account` first). `--account <account>` picks one explicitly: to
+create a box outside `default_account`, or when two accounts have a box of
+the same name.
 
 `user` (default `$USER`) goes into the `barn:owner` tag of boxes you create. On the box everyone logs in as `ubuntu`
 (UID 1000, the same UID most container images use).
@@ -89,8 +92,8 @@ barn ssh zach-dev      # or plain: ssh zach-dev
 herdr                  # on the box: start/attach the session
 ```
 
-For a box in another account, add `--account <account>` to any of these
-(`barn create zach-dev --account work`). Inside herdr, run `claude` or `kiro-cli` in panes. Detach with `ctrl+b q` and
+The other commands find the box in whichever account has it. To create a box
+in another account, add `--account <account>` (`barn create zach-dev --account work`). Inside herdr, run `claude` or `kiro-cli` in panes. Detach with `ctrl+b q` and
 reattach later with `herdr`. Don't run herdr inside tmux.
 
 | Command | Who | What it does |

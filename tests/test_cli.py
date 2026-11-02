@@ -34,6 +34,7 @@ def calls(monkeypatch):
     """Record what each command would do, without AWS."""
     seen = []
     monkeypatch.setattr(cli, "Context", lambda verbose=False, account=None: f"ctx({verbose}, {account})")
+    monkeypatch.setattr(cli, "box_context", lambda name, account=None, verbose=False: f"ctx({verbose}, {account})")
     for name in ("create", "destroy", "hold"):
         monkeypatch.setattr(cli, name, lambda *a, _n=name: seen.append((_n, *a)) or 0)
     monkeypatch.setattr(cli.os, "execvp", lambda *a: seen.append(("execvp", *a)))
@@ -57,7 +58,7 @@ def test_commands_parse(calls):
 
 
 def test_ssh_refreshes_entry_and_passes_extra_args_through(calls, monkeypatch):
-    monkeypatch.setattr(cli, "Context", lambda account=None: f"ctx({account})")
+    monkeypatch.setattr(cli, "box_context", lambda name, account=None: f"ctx({account})")
     state = {"Name": "running"}
     monkeypatch.setattr(cli, "connect", lambda ctx, name, quiet: calls.append(("connect", ctx, name)) or {"State": state})
     r = CliRunner().invoke(app, ["ssh", "alice-dev", "-N", "-L", "8080:localhost:8080"])

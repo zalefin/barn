@@ -94,7 +94,8 @@ Send them the account file and, for IAM users, the role ARNs (or ready-made
    Already using barn with another account? `barn init --account-file
    <account>.toml` adds the account file and keeps `config.toml`; add
    `<account> = "barn-<user>-manager"` under its `[aws_profiles]`. Commands
-   then take `--account <account>` (or change `default_account`).
+   find existing boxes in it on their own; `barn create` needs
+   `--account <account>` (or change `default_account`).
 3. **Guests** also need a box owner to add their public key to the owner's
    `[guest_keys]` list for this account and run `barn sync <name>`. Then `barn connect <name>` and
    plain `ssh <name>` work ([Guests](../README.md#guests)).

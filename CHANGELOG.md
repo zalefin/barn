@@ -5,6 +5,14 @@ minor release (0.x.0) may change the CLI or the files in `~/.config/barn/`;
 when it changes the files, barn migrates them automatically on first run
 (README: [Versions](README.md#versions)). Releases are git tags `vX.Y.Z`.
 
+## Unreleased
+
+- **Box commands find the box's account.** Without `--account`, `start`,
+  `stop`, `connect`, `ssh`, `sync`, `doctor`, `destroy` and `create` look for
+  the box (its instance or home volume) in every account: `default_account`
+  if it has the box, else the one account that does. A name in several other
+  accounts asks for `--account`; a new box still goes in `default_account`.
+
 ## 0.3.0 (2026-11-02)
 
 - **Guest keys per account.** `guest_keys` is now a table with one list per
