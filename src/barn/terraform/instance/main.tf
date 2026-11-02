@@ -1,4 +1,4 @@
-# Per-environment instance. Disposable: destroying it leaves the home volume.
+# Per-box instance. Disposable: destroying it leaves the home volume.
 
 terraform {
   required_version = ">= 1.10"
@@ -16,17 +16,14 @@ provider "aws" {
 
 locals {
   tags = merge(var.extra_tags, {
-    "Name"       = "barn-${var.user}-${var.env}"
+    "Name"       = "barn-${var.name}"
     "barn"       = "true"
+    "barn:name"  = var.name
     "barn:owner" = var.user
-    "barn:env"   = var.env
   })
 
-  # The SSH alias, <user>-<env>, as a valid hostname (user comes from $USER).
-  hostname = substr(trim(replace(lower("${var.user}-${var.env}"), "/[^a-z0-9-]+/", "-"), "-"), 0, 63)
-
   user_data = templatefile("${path.module}/../../bootstrap/user-data.sh.tftpl", {
-    hostname          = local.hostname
+    hostname          = var.name
     ssh_public_key    = var.ssh_public_key
     passwordless_sudo = var.passwordless_sudo
     idle_hours        = var.idle_hours
@@ -35,6 +32,7 @@ locals {
     idle_decide_py    = file("${path.module}/../../bootstrap/idle_decide.py")
     idle_service      = file("${path.module}/../../bootstrap/idle-check.service")
     idle_timer        = file("${path.module}/../../bootstrap/idle-check.timer")
+    authorized_keys   = file("${path.module}/../../bootstrap/authorized_keys.py")
   })
 }
 
@@ -64,7 +62,7 @@ resource "aws_instance" "box" {
   }
 
   tags = local.tags
-  # Tagged at launch (the developer policy only allows tagging during create).
+  # Tagged at launch (the manager policy only allows tagging during create).
   # Same map as the home volume's tags so the two roots never disagree.
   volume_tags = local.tags
 

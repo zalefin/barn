@@ -50,7 +50,7 @@ action=$(python3 "$LIB/idle_decide.py" "$IN" "$STATE/idle-state.json" "$IDLE_HOU
 echo "idle-check: action=$action"
 case "$action" in
   warn)
-    wall "barn: this box has been idle for ${IDLE_HOURS}h and will stop in 15 minutes. Run 'barn hold <env> <duration>' or start working to keep it up."
+    wall "barn: this box has been idle for ${IDLE_HOURS}h and will stop in 15 minutes. Run 'barn hold $(hostname) <duration>' or start working to keep it up."
     ;;
   shutdown)
     wall "barn: idle; stopping now (home volume is kept)."

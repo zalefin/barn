@@ -1,5 +1,5 @@
 """AWS sessions. Everything (boto3, terraform, the SSH ProxyCommand) uses the
-developer's own AWS CLI profile; if that profile assumes a role, the AWS SDKs
+person's own AWS CLI profile; if that profile assumes a role, the AWS SDKs
 and CLI do it themselves."""
 
 import boto3

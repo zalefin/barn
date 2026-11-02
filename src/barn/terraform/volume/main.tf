@@ -1,4 +1,4 @@
-# Per-environment home volume. Survives instance destroy/recreate.
+# Per-box home volume. Survives instance destroy/recreate.
 
 terraform {
   required_version = ">= 1.10"
@@ -19,11 +19,18 @@ variable "region" {
 }
 
 variable "user" {
-  type = string
+  description = "Who created the box: the barn:owner tag."
+  type        = string
 }
 
-variable "env" {
-  type = string
+variable "name" {
+  description = "The box's full name: SSH alias, hostname and barn:name tag."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{0,38}[a-z0-9]$", var.name)) && !contains(["workspaces", "plugin-cache"], var.name)
+    error_message = "2 to 40 lowercase letters, digits and dashes, starting with a letter; not \"workspaces\" or \"plugin-cache\"."
+  }
 }
 
 variable "subnet_id" {
@@ -59,10 +66,10 @@ resource "aws_ebs_volume" "home" {
 
   # Must match the instance root's volume_tags exactly, or the two roots fight.
   tags = merge(var.extra_tags, {
-    "Name"       = "barn-${var.user}-${var.env}"
+    "Name"       = "barn-${var.name}"
     "barn"       = "true"
+    "barn:name"  = var.name
     "barn:owner" = var.user
-    "barn:env"   = var.env
   })
 }
 

@@ -10,7 +10,7 @@ subnet_ids = ["CHANGE-ME"]                 # subnet-...; new volumes use the fir
 
 # Optional
 ami_ssm_parameter = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
-developer_role_arn = ""   # role your profile's permissions come from; enables doctor's policy check
+manager_role_arn = ""     # the barn-manager role; enables doctor's policy check for managers
 kms_key_id = ""           # empty: the account's default EBS key
 
 [extra_tags]

@@ -141,7 +141,7 @@ def todo(home):
 
     env = home / "home" / ".barn" / "env"
     if not any(line.strip().startswith("export ") for line in env.read_text().splitlines()):
-        items.append((False, env, "add CLAUDE_CODE_OAUTH_TOKEN and KIRO_API_KEY, then `barn sync <env>`"))
+        items.append((False, env, "add CLAUDE_CODE_OAUTH_TOKEN and KIRO_API_KEY, then `barn sync <name>`"))
     return items
 
 
@@ -168,5 +168,5 @@ def init(home, account=None, aws_profile=None, account_file=None):
     if required or any(s == "fail" for s, _, _ in tools):
         ui.err.print("[muted]Edit the files above, then run[/] [accent]barn init[/] [muted]again to check.[/]")
     else:
-        ui.err.print("[ok]●[/] ready   [accent]barn create dev[/]")
+        ui.err.print("[ok]●[/] ready   [accent]barn list[/]  [muted]·[/]  [accent]barn create <name>[/] [muted](managers)[/]")
     return 0

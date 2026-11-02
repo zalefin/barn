@@ -1,9 +1,16 @@
 """SSH over SSM: the managed ~/.ssh/barn.conf and helpers to run
 commands on a box."""
 
+import fcntl
+import os
 import re
 import subprocess
 from pathlib import Path
+
+from .config import PUBLIC_KEY
+
+# Also installed by first boot; one implementation of the authorized_keys blocks.
+AUTHORIZED_KEYS_PY = Path(__file__).parent / "bootstrap" / "authorized_keys.py"
 
 INCLUDE = "Include barn.conf"
 BEGIN = "# >>> barn {name} >>>"
@@ -36,13 +43,18 @@ def host_entry(alias, instance_id, user, identity_file, aws_profile, region):
 
 
 def write_host(alias, entry, ssh_dir=None):
-    """Write (entry) or remove (entry=None) one environment's block."""
+    """Write (entry) or remove (entry=None) one box's block."""
     ssh_dir = Path(ssh_dir or Path.home() / ".ssh")
     ssh_dir.mkdir(mode=0o700, exist_ok=True)
     managed = ssh_dir / "barn.conf"
-    old = managed.read_text() if managed.exists() else ""
-    managed.write_text(_replace_block(old, alias, entry))
-    managed.chmod(0o600)
+    # Several barn runs (people, boxes) may share this file: lock, then replace atomically.
+    with open(ssh_dir / ".barn.conf.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        old = managed.read_text() if managed.exists() else ""
+        tmp = managed.with_name(".barn.conf.tmp")
+        tmp.write_text(_replace_block(old, alias, entry))
+        tmp.chmod(0o600)
+        os.replace(tmp, managed)
 
     config = ssh_dir / "config"
     text = config.read_text() if config.exists() else ""
@@ -75,3 +87,22 @@ def reachable(alias, timeout=60):
         return run(alias, "true", timeout=timeout).returncode == 0
     except subprocess.TimeoutExpired:
         return False
+
+
+def authorized_keys_script(block, keys):
+    """A bash script (run as the box user) that makes `block` of
+    ~/.ssh/authorized_keys hold exactly keys and leaves the rest alone."""
+    for k in keys:
+        if not PUBLIC_KEY.match(k):
+            raise ValueError(f"not a one-line SSH public key: {k!r}")
+    source = AUTHORIZED_KEYS_PY.read_text()
+    keys_text = "".join(f"{k}\n" for k in keys)
+    return f"""set -euo pipefail
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+cat > "$tmp/authorized_keys.py" <<'BARN_AK_PY'
+{source}BARN_AK_PY
+cat > "$tmp/keys" <<'BARN_KEYS'
+{keys_text}BARN_KEYS
+install -d -m 0700 ~/.ssh
+python3 "$tmp/authorized_keys.py" ~/.ssh/authorized_keys {block} "$tmp/keys"
+"""

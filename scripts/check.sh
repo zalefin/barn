@@ -23,5 +23,7 @@ text = open(sys.argv[1]).read()
 text = re.sub(r"(?<!\$)\$\{[a-z_]+\}", "x", text).replace("$${", "${")
 print(text)
 PY
-shellcheck -s bash "$rendered" "$pkg/bootstrap/idle-check.sh"
+# shellcheck from PATH, or the shellcheck-py wheel through uvx (nothing installed).
+if command -v shellcheck >/dev/null; then sc=(shellcheck); else sc=(uvx --from shellcheck-py shellcheck); fi
+"${sc[@]}" -s bash "$rendered" "$pkg/bootstrap/idle-check.sh"
 echo "all checks passed"

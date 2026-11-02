@@ -9,13 +9,14 @@ from importlib.metadata import version
 from typing import Annotated
 
 import typer
+from botocore.exceptions import ClientError
 from rich import box
 from rich.prompt import Prompt
 from rich.table import Table
 
 from . import ssh, ui
 from .aws import Aws
-from .config import BOX_USER, ConfigError, app_home, check_env_name, load_account, load_settings
+from .config import BOX_USER, ConfigError, app_home, check_name, load_account, load_settings
 from .tf import Terraform, TerraformError, install_roots
 
 MARKER = "/var/lib/barn/bootstrap-done"
@@ -37,6 +38,13 @@ GP3_MONTH_PER_GB = 0.08
 STATE_STYLE = {"running": "ok", "stopped": "muted", "pending": "warn", "stopping": "warn"}
 
 
+LIVE = ["pending", "running", "stopping", "stopped"]
+
+
+def tag_map(resource):
+    return {t["Key"]: t["Value"] for t in resource.get("Tags", [])}
+
+
 class Context:
     def __init__(self, verbose=False):
         self.home = app_home()
@@ -46,35 +54,54 @@ class Context:
         self.verbose = verbose
         self._roots_installed = False
 
-    def alias(self, env):
-        return f"{self.settings.user}-{env}"
-
-    def tf(self, env, root):
+    def tf(self, name, root):
         if not self._roots_installed:
             install_roots(self.home)
             self._roots_installed = True
-        return Terraform(self.home, self.aws, self.settings.user, env, root, verbose=self.verbose)
+        return Terraform(self.home, self.aws, name, root, verbose=self.verbose)
 
-    def find_instance(self, env):
-        """The environment's instance (not terminated), or None."""
-        resp = self.aws.client("ec2").describe_instances(
-            Filters=[
-                {"Name": "tag:barn", "Values": ["true"]},
-                {"Name": "tag:barn:owner", "Values": [self.settings.user]},
-                {"Name": "tag:barn:env", "Values": [env]},
-                {"Name": "instance-state-name", "Values": ["pending", "running", "stopping", "stopped"]},
-            ]
-        )
-        for r in resp["Reservations"]:
-            for i in r["Instances"]:
-                return i
-        return None
+    def _pages(self, method, key, filters):
+        ec2 = self.aws.client("ec2")
+        for page in ec2.get_paginator(method).paginate(Filters=filters):
+            yield from page[key]
 
-    def require_instance(self, env):
-        inst = self.find_instance(env)
+    def instances(self, name=None):
+        """barn instances that are not terminated: all of them, or one box's."""
+        filters = [{"Name": "tag:barn", "Values": ["true"]}, {"Name": "instance-state-name", "Values": LIVE}]
+        if name:
+            filters.append({"Name": "tag:barn:name", "Values": [name]})
+        for r in self._pages("describe_instances", "Reservations", filters):
+            yield from r["Instances"]
+
+    def volumes(self, name=None):
+        """barn volumes (home and root): all of them, or one box's."""
+        filters = [{"Name": "tag:barn", "Values": ["true"]}]
+        if name:
+            filters.append({"Name": "tag:barn:name", "Values": [name]})
+        return self._pages("describe_volumes", "Volumes", filters)
+
+    def find_instance(self, name):
+        """The box's instance (not terminated), or None."""
+        return next(iter(self.instances(name)), None)
+
+    def require_instance(self, name):
+        inst = self.find_instance(name)
         if not inst:
-            raise ConfigError(f"no instance for environment {env!r}; run `barn create {env}`")
+            raise ConfigError(f"no box named {name!r}; `barn list` shows every box in the account")
         return inst
+
+    def owners(self, name):
+        """barn:owner of every instance and volume named name."""
+        found = [*self.instances(name), *self.volumes(name)]
+        return {tag_map(r).get("barn:owner", "") for r in found}
+
+
+def check_owner(ctx, name, doing, force=False, hint=""):
+    """An accident guard, not a security boundary (any manager may manage any box):
+    refuse when the box or volume was created by someone else."""
+    others = sorted(o or "nobody" for o in ctx.owners(name) - {ctx.settings.user})
+    if others and not force:
+        raise ConfigError(f"refusing to {doing} {name}: it is owned by {', '.join(others)}" + (f"; {hint}" if hint else ""))
 
 
 def wait_until(what, predicate, timeout, interval=10):
@@ -93,14 +120,19 @@ def console_tail(ctx, instance_id, lines=40):
 
 
 def show_console(ctx, instance_id):
-    ui.block(console_tail(ctx, instance_id), title="console output (last 40 lines)")
+    try:
+        tail = console_tail(ctx, instance_id)
+    except ClientError as e:  # guests may not read console output
+        ui.info("console output not available", e.response["Error"].get("Code", str(e)))
+        return
+    ui.block(tail, title="console output (last 40 lines)")
 
 
-def volume_vars(ctx, env, subnet_id):
+def volume_vars(ctx, name, subnet_id):
     return {
         "region": ctx.account.region,
         "user": ctx.settings.user,
-        "env": env,
+        "name": name,
         "subnet_id": subnet_id,
         "size_gb": ctx.settings.volume_gb,
         "kms_key_id": ctx.account.kms_key_id,
@@ -108,12 +140,12 @@ def volume_vars(ctx, env, subnet_id):
     }
 
 
-def instance_vars(ctx, env, vol, instance_type):
+def instance_vars(ctx, name, vol, instance_type):
     s, a = ctx.settings, ctx.account
     return {
         "region": a.region,
         "user": s.user,
-        "env": env,
+        "name": name,
         "ssh_public_key": s.public_key_path.read_text().strip(),
         "passwordless_sudo": s.passwordless_sudo,
         "idle_hours": s.idle_hours,
@@ -128,10 +160,11 @@ def instance_vars(ctx, env, vol, instance_type):
     }
 
 
-def write_ssh_entry(ctx, env, instance_id):
+def write_ssh_entry(ctx, name, instance_id):
+    """The box's ~/.ssh/barn.conf entry, with this person's key and AWS profile."""
     s = ctx.settings
-    entry = ssh.host_entry(ctx.alias(env), instance_id, BOX_USER, s.private_key_path, s.aws_profile, ctx.account.region)
-    ssh.write_host(ctx.alias(env), entry)
+    entry = ssh.host_entry(name, instance_id, BOX_USER, s.private_key_path, s.aws_profile, ctx.account.region)
+    ssh.write_host(name, entry)
 
 
 def ssm_online(ctx, instance_id):
@@ -146,8 +179,8 @@ def wait_online(ctx, instance_id):
         wait_until("SSM online", lambda: ssm_online(ctx, instance_id), timeout=600)
 
 
-def wait_for_bootstrap(ctx, env, instance_id, timeout=1500):
-    alias = ctx.alias(env)
+def wait_for_bootstrap(ctx, name, instance_id, timeout=1500):
+    alias = name
     wait_online(ctx, instance_id)
 
     def marker():
@@ -175,88 +208,98 @@ def apply(tf, variables, s):
     s.result = tf.apply(variables, on_line=s.update)
 
 
-def create(ctx, env, size=None):
-    env = check_env_name(env)
-    vol_tf = ctx.tf(env, "volume")
-    inst_tf = ctx.tf(env, "instance")
-
+def create(ctx, name, size=None):
+    name = check_name(name)
     with ui.step("Reading state"):
+        check_owner(ctx, name, "create", hint="pick another name")
+        vol_tf = ctx.tf(name, "volume")
+        inst_tf = ctx.tf(name, "instance")
         vol = vol_tf.outputs()
-        current = ctx.find_instance(env)
+        current = ctx.find_instance(name)
     size = size or (current or {}).get("InstanceType") or ctx.settings.default_size
-    ui.header(ctx.alias(env), size, ctx.account.region, f"account {ctx.account.name}")
+    ui.header(name, size, ctx.account.region, f"account {ctx.account.name}")
 
     subnet = vol.get("subnet_id") or ctx.account.subnet_ids[0]
     existed = bool(vol)
     with ui.step("Home volume") as s:
-        apply(vol_tf, volume_vars(ctx, env, subnet), s)
+        apply(vol_tf, volume_vars(ctx, name, subnet), s)
         changed = existed and " 0 changed" not in f" {s.result}"
         vol = vol_tf.outputs()
         s.result = " · ".join(p for p in (vol["volume_id"], vol["availability_zone"], s.result) if p)
 
     with ui.step("Instance") as s:
-        apply(inst_tf, instance_vars(ctx, env, vol, size), s)
+        apply(inst_tf, instance_vars(ctx, name, vol, size), s)
         instance_id = inst_tf.outputs()["instance_id"]
         s.result = " · ".join(p for p in (instance_id, s.result) if p)
 
-    write_ssh_entry(ctx, env, instance_id)
-    inst = ctx.find_instance(env)
+    write_ssh_entry(ctx, name, instance_id)
+    inst = ctx.find_instance(name)
     if inst and inst["State"]["Name"] in ("stopped", "stopping"):
         with ui.step("Starting"):
             start_instance(ctx, instance_id)
-    wait_for_bootstrap(ctx, env, instance_id)
+    wait_for_bootstrap(ctx, name, instance_id)
     if changed:
-        grow_home(ctx, env)
-    ready(ctx, env)
+        grow_home(ctx, name)
+    push_guest_keys(ctx, name)
+    ready(ctx, name)
 
 
-def grow_home(ctx, env):
+def push_guest_keys(ctx, name):
+    """Make the box's guests block in authorized_keys exactly guest_keys (an empty
+    list revokes every guest). Keys outside the barn blocks are kept."""
+    keys = ctx.settings.guest_keys
+    with ui.step("Guest keys") as s:
+        r = ssh.run(name, ssh.authorized_keys_script("guests", keys))
+        if r.returncode != 0:
+            raise RuntimeError(f"updating authorized_keys failed: {(r.stderr or r.stdout).strip()}")
+        s.result = ", ".join(k.split()[2] if len(k.split()) > 2 else k.split()[0] for k in keys) or "none"
+
+
+def grow_home(ctx, name):
     """Grow the home filesystem to a resized volume (first boot does it for new boxes)."""
     with ui.step("Growing home filesystem") as s:
-        r = ssh.run(ctx.alias(env), 'sudo -n resize2fs "$(findmnt -n -o SOURCE ~)" 2>&1 && df -h ~ | tail -1')
+        r = ssh.run(name, 'sudo -n resize2fs "$(findmnt -n -o SOURCE ~)" 2>&1 && df -h ~ | tail -1')
         if r.returncode != 0:
             raise RuntimeError(f"resize2fs failed (needs passwordless sudo): {r.stdout.strip()}")
         size, _, free = r.stdout.split()[-5:-2]  # df: Filesystem Size Used Avail Use% Mounted
         s.result = f"{size} total, {free} free"
 
 
-def ready(ctx, env):
+def ready(ctx, name):
     ui.err.print()
-    ui.err.print(
-        f"[ok]●[/] [name]{ctx.alias(env)}[/] is ready   "
-        f"[accent]barn ssh {env}[/]  [muted]or[/]  [accent]ssh {ctx.alias(env)}[/]"
-    )
+    ui.err.print(f"[ok]●[/] [name]{name}[/] is ready   [accent]barn ssh {name}[/]  [muted]or[/]  [accent]ssh {name}[/]")
 
 
-def destroy(ctx, env, volume=False):
-    env = check_env_name(env)
-    vol_tf = ctx.tf(env, "volume")
+def destroy(ctx, name, volume=False, force=False):
+    name = check_name(name)
     with ui.step("Reading state"):
+        check_owner(ctx, name, "destroy", force, hint="pass --force to destroy it anyway")
+        vol_tf = ctx.tf(name, "volume")
         vol = vol_tf.outputs()
     if volume:
         if not vol:
-            ui.warn("no volume state for this environment")
+            ui.warn("no volume state for this box")
         else:
             ui.err.print(
                 f"[fail]This permanently deletes the home volume[/] [name]{vol['volume_id']}[/] "
-                f"[fail]of[/] [name]{ctx.alias(env)}[/][fail]: every file, tool and Docker image on it.[/]"
+                f"[fail]of[/] [name]{name}[/][fail]: every file, tool and Docker image on it.[/]"
             )
-            typed = Prompt.ask(f"Type [name]{env}[/] to confirm", console=ui.err, default="", show_default=False)
-            if typed.strip() != env:
+            typed = Prompt.ask(f"Type [name]{name}[/] to confirm", console=ui.err, default="", show_default=False)
+            if typed.strip() != name:
                 ui.info("not confirmed; nothing destroyed")
                 return 1
-    inst_tf = ctx.tf(env, "instance")
+    inst_tf = ctx.tf(name, "instance")
     if vol:
-        size = (ctx.find_instance(env) or {}).get("InstanceType") or ctx.settings.default_size
+        size = (ctx.find_instance(name) or {}).get("InstanceType") or ctx.settings.default_size
         with ui.step("Instance") as s:
-            s.result = inst_tf.destroy(instance_vars(ctx, env, vol, size), on_line=s.update)
-    ssh.write_host(ctx.alias(env), None)
+            s.result = inst_tf.destroy(instance_vars(ctx, name, vol, size), on_line=s.update)
+    ssh.write_host(name, None)
     if volume and vol:
         with ui.step("Home volume") as s:
-            s.result = vol_tf.destroy(volume_vars(ctx, env, vol["subnet_id"]), on_line=s.update)
-        ssh.forget_host_key(ctx.alias(env))
+            s.result = vol_tf.destroy(volume_vars(ctx, name, vol["subnet_id"]), on_line=s.update)
+        ssh.forget_host_key(name)
     elif vol:
-        ui.info("home volume kept", f"{vol['volume_id']}; `barn create {env}` brings the box back")
+        ui.info("home volume kept", f"{vol['volume_id']}; `barn create {name}` brings the box back")
     return 0
 
 
@@ -266,83 +309,101 @@ def start_instance(ctx, instance_id):
     ec2.get_waiter("instance_running").wait(InstanceIds=[instance_id])
 
 
-def start(ctx, env):
-    inst = ctx.require_instance(env)
-    with ui.step(f"Starting {ctx.alias(env)}") as s:
+def start(ctx, name):
+    inst = ctx.require_instance(check_name(name))
+    with ui.step(f"Starting {name}") as s:
         s.result = inst["InstanceId"]
         start_instance(ctx, inst["InstanceId"])
-    write_ssh_entry(ctx, env, inst["InstanceId"])
+    write_ssh_entry(ctx, name, inst["InstanceId"])
     wait_online(ctx, inst["InstanceId"])
-    ready(ctx, env)
+    ready(ctx, name)
 
 
-def stop(ctx, env):
-    inst = ctx.require_instance(env)
+def stop(ctx, name):
+    inst = ctx.require_instance(check_name(name))
     ec2 = ctx.aws.client("ec2")
-    with ui.step(f"Stopping {ctx.alias(env)}") as s:
+    with ui.step(f"Stopping {name}") as s:
         s.result = f"{inst['InstanceId']} · home volume kept"
         ec2.stop_instances(InstanceIds=[inst["InstanceId"]])
         ec2.get_waiter("instance_stopped").wait(InstanceIds=[inst["InstanceId"]])
 
 
-def environments(ctx):
-    """{env: {volume_gb, id, state, type, uptime}} for this developer."""
-    ec2 = ctx.aws.client("ec2")
-    owner = [
-        {"Name": "tag:barn", "Values": ["true"]},
-        {"Name": "tag:barn:owner", "Values": [ctx.settings.user]},
-    ]
-    envs = {}
-    for v in ec2.describe_volumes(Filters=owner)["Volumes"]:
-        tags = {t["Key"]: t["Value"] for t in v.get("Tags", [])}
+def connect(ctx, name, quiet=False):
+    """Point ~/.ssh/barn.conf's entry for the box at its current instance, with
+    this person's key and profile. Returns the instance."""
+    inst = ctx.require_instance(check_name(name))
+    write_ssh_entry(ctx, name, inst["InstanceId"])
+    state = inst["State"]["Name"]
+    owner = tag_map(inst).get("barn:owner", "?")
+    if not quiet:
+        ui.done(f"{name} → {inst['InstanceId']}", f"owner {owner} · ~/.ssh/barn.conf")
+    if state != "running":
+        ui.warn(f"{name} is {state}", f"ask a manager to run `barn start {name}`" if state == "stopped" else "")
+    elif not quiet:
+        ui.err.print(
+            f"[ok]●[/] [accent]ssh {name}[/]  [muted]·[/]  [accent]rsync -a ./dir {name}:~/[/]  [muted]·[/]  "
+            f"[accent]herdr --remote {name}[/]"
+        )
+    return inst
+
+
+def boxes(ctx):
+    """{name: {owner, volume_gb, id, state, type, uptime}} for every barn box in
+    the account. Resources without barn:name (made before box names) are skipped."""
+    found = {}
+    for v in ctx.volumes():
+        tags = tag_map(v)
         # Root volumes carry the same tags; the home volume is the one at /dev/sdf.
         attached = [a["Device"] for a in v.get("Attachments", [])]
-        if attached and "/dev/sdf" not in attached:
+        if not tags.get("barn:name") or attached and "/dev/sdf" not in attached:
             continue
-        envs.setdefault(tags.get("barn:env"), {})["volume_gb"] = v["Size"]
-    instances = ec2.describe_instances(
-        Filters=owner + [{"Name": "instance-state-name", "Values": ["pending", "running", "stopping", "stopped"]}]
-    )
+        b = found.setdefault(tags["barn:name"], {})
+        b.update(volume_gb=v["Size"], owner=tags.get("barn:owner", ""))
     now = datetime.now(timezone.utc)
-    for r in instances["Reservations"]:
-        for i in r["Instances"]:
-            tags = {t["Key"]: t["Value"] for t in i.get("Tags", [])}
-            e = envs.setdefault(tags.get("barn:env"), {})
-            e.update(id=i["InstanceId"], state=i["State"]["Name"], type=i["InstanceType"])
-            if e["state"] == "running":
-                e["uptime"] = now - i["LaunchTime"]
-    return {k: v for k, v in envs.items() if k}
+    for i in ctx.instances():
+        tags = tag_map(i)
+        if not tags.get("barn:name"):
+            continue
+        b = found.setdefault(tags["barn:name"], {})
+        b.update(id=i["InstanceId"], state=i["State"]["Name"], type=i["InstanceType"])
+        b.setdefault("owner", tags.get("barn:owner", ""))
+        if b["state"] == "running":
+            b["uptime"] = now - i["LaunchTime"]
+    return found
 
 
-def env_table(envs, width=120):
+def box_table(found, me, width=120):
     table = Table(box=box.SIMPLE_HEAD, header_style="muted", pad_edge=False)
     # The instance ID is the first thing to go in a narrow terminal.
-    columns = ("ENV", "STATE", "TYPE", "UPTIME", "COST") + (("INSTANCE",) if width >= 90 else ())
+    columns = ("NAME", "OWNER", "STATE", "TYPE", "UPTIME", "COST") + (("INSTANCE",) if width >= 100 else ())
     for col in columns:
         table.add_column(col, no_wrap=True, justify="right" if col in ("UPTIME", "COST") else "left")
     hourly_total = 0.0
-    for env in sorted(envs):
-        e = envs[env]
-        state = e.get("state", "no box")
-        up = e.get("uptime")
-        hourly = HOURLY.get(e.get("type"))
+    for name in sorted(found):
+        b = found[name]
+        state = b.get("state", "no box")
+        up = b.get("uptime")
+        hourly = HOURLY.get(b.get("type"))
         cost = []
         if state == "running":
             cost.append(f"${hourly:.2f}/h" if hourly else "?/h")
             hourly_total += hourly or 0
-        if e.get("volume_gb"):
-            cost.append(f"${e['volume_gb'] * GP3_MONTH_PER_GB:.0f}/mo")
+        if b.get("volume_gb"):
+            cost.append(f"${b['volume_gb'] * GP3_MONTH_PER_GB:.0f}/mo")
+        owner = b.get("owner") or "?"
         row = [
-            f"[name]{env}[/]",
+            f"[name]{name}[/]",
+            f"[accent]{owner} (you)[/]" if owner == me else owner,
             f"[{STATE_STYLE.get(state, 'muted')}]{state}[/]",
-            e.get("type", "[muted]-[/]"),
+            b.get("type", "[muted]-[/]"),
             ui.elapsed(up.total_seconds()) if up else "[muted]-[/]",
             " + ".join(cost) or "[muted]-[/]",
-            f"[muted]{e.get('id', '-')}[/]",
+            f"[muted]{b.get('id', '-')}[/]",
         ]
         table.add_row(*row[: len(columns)])
-    running = sum(1 for e in envs.values() if e.get("state") == "running")
-    table.caption = f"{len(envs)} environment{'s' * (len(envs) != 1)} · {running} running" + (
+    running = sum(1 for b in found.values() if b.get("state") == "running")
+    mine = sum(1 for b in found.values() if b.get("owner") == me)
+    table.caption = f"{len(found)} box{'es' * (len(found) != 1)} ({mine} yours) · {running} running" + (
         f" · ~${hourly_total:.2f}/h" if hourly_total else ""
     )
     table.caption_style = "muted"
@@ -350,12 +411,12 @@ def env_table(envs, width=120):
     return table
 
 
-def list_envs(ctx):
-    envs = environments(ctx)
-    if not envs:
-        ui.info("no environments", "create one with `barn create <env>`")
+def list_boxes(ctx):
+    found = boxes(ctx)
+    if not found:
+        ui.info("no boxes in this account", f"create one with `barn create {ctx.settings.user}-dev`")
         return
-    ui.out.print(env_table(envs, ui.out.width))
+    ui.out.print(box_table(found, ctx.settings.user, ui.out.width))
 
 
 DURATION = re.compile(r"^(\d+)([mhd])$")
@@ -368,11 +429,11 @@ def parse_duration(text):
     return int(m.group(1)) * {"m": 60, "h": 3600, "d": 86400}[m.group(2)]
 
 
-def hold(ctx, env, duration):
+def hold(ctx, name, duration):
     seconds = parse_duration(duration)
-    with ui.step(f"Holding {ctx.alias(env)}") as s:
+    with ui.step(f"Holding {check_name(name)}") as s:
         r = ssh.run(
-            ctx.alias(env),
+            name,
             f'mkdir -p ~/.barn && echo $(( $(date +%s) + {seconds} )) > ~/.barn/hold-until '
             "&& date -d @$(cat ~/.barn/hold-until)",
         )
@@ -385,7 +446,7 @@ def hold(ctx, env, duration):
 
 app = typer.Typer(
     name="barn",
-    help="Personal EC2 dev boxes for long-running agent runs.",
+    help="EC2 dev boxes for long-running agent runs. Managers create them; anyone can connect.",
     epilog=f"Settings, account files and terraform state live in {app_home()} (BARN_HOME).",
     no_args_is_help=True,
     rich_markup_mode="rich",
@@ -393,8 +454,10 @@ app = typer.Typer(
     pretty_exceptions_enable=False,
 )
 
-SETUP, ENVIRONMENTS, ON_THE_BOX = "Setup", "Environments", "On the box"
-Env = Annotated[str, typer.Argument(metavar="ENV", help="Environment name, e.g. [cyan]dev[/] (the box is [cyan]<user>-<env>[/]).")]
+SETUP, MANAGE, CONNECT = "Setup", "Manage boxes (managers)", "Use a box (anyone)"
+Name = Annotated[
+    str, typer.Argument(metavar="NAME", help="The box's full name, e.g. [cyan]zach-dev[/]; also its SSH alias.")
+]
 Verbose = Annotated[bool, typer.Option("--verbose", "-v", help="Stream terraform output instead of a spinner.")]
 
 
@@ -432,76 +495,84 @@ def init_cmd(
     raise typer.Exit(init(app_home(), account, aws_profile, account_file))
 
 
-@app.command("create", rich_help_panel=ENVIRONMENTS)
+@app.command("create", rich_help_panel=MANAGE)
 def create_cmd(
-    env: Env,
+    name: Name,
     size: Annotated[str | None, typer.Option(metavar="TYPE", help="EC2 instance type (default: default_size).")] = None,
     verbose: Verbose = False,
 ):
-    """Create or update an environment: home volume, then box. Re-run with --size to resize."""
-    create(Context(verbose), env, size)
+    """Create or update a box: home volume, then instance. Re-run with --size to resize."""
+    create(Context(verbose), name, size)
 
 
-@app.command("destroy", rich_help_panel=ENVIRONMENTS)
+@app.command("destroy", rich_help_panel=MANAGE)
 def destroy_cmd(
-    env: Env,
+    name: Name,
     volume: Annotated[bool, typer.Option("--volume", help="Also delete the home volume (asks first).")] = False,
+    force: Annotated[bool, typer.Option("--force", help="Destroy a box someone else created.")] = False,
     verbose: Verbose = False,
 ):
     """Delete the box and keep the home volume."""
-    raise typer.Exit(destroy(Context(verbose), env, volume))
+    raise typer.Exit(destroy(Context(verbose), name, volume, force))
 
 
-@app.command("start", rich_help_panel=ENVIRONMENTS)
-def start_cmd(env: Env):
+@app.command("start", rich_help_panel=MANAGE)
+def start_cmd(name: Name):
     """Start a stopped box."""
-    start(Context(), env)
+    start(Context(), name)
 
 
-@app.command("stop", rich_help_panel=ENVIRONMENTS)
-def stop_cmd(env: Env):
+@app.command("stop", rich_help_panel=MANAGE)
+def stop_cmd(name: Name):
     """Stop the box. A stopped box costs only its volumes."""
-    stop(Context(), env)
+    stop(Context(), name)
 
 
-@app.command("list", rich_help_panel=ENVIRONMENTS)
+@app.command("sync", rich_help_panel=MANAGE)
+def sync_cmd(name: Name):
+    """Push your guest_keys and home overlay onto your box. Never deletes files; skips them while agents run."""
+    from .sync import sync
+
+    raise typer.Exit(sync(Context(), name))
+
+
+@app.command("list", rich_help_panel=CONNECT)
 def list_cmd():
-    """Your environments: state, type, uptime, rough cost."""
-    list_envs(Context())
+    """Every box in the account: owner, state, type, uptime, rough cost."""
+    list_boxes(Context())
+
+
+@app.command("connect", rich_help_panel=CONNECT)
+def connect_cmd(name: Name):
+    """Add the box to ~/.ssh/barn.conf, so plain ssh, scp, rsync and herdr --remote work."""
+    connect(Context(), name)
 
 
 @app.command(
     "ssh",
-    rich_help_panel=ON_THE_BOX,
+    rich_help_panel=CONNECT,
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )
-def ssh_cmd(typer_ctx: typer.Context, env: Env):
+def ssh_cmd(typer_ctx: typer.Context, name: Name):
     """SSH into the box through SSM. Extra arguments go to ssh, e.g. [cyan]-N -L 8080:localhost:8080[/]."""
-    ctx = Context()
-    check_env_name(env)
-    os.execvp("ssh", ["ssh", ctx.alias(env), *typer_ctx.args])
+    inst = connect(Context(), name, quiet=True)
+    if inst["State"]["Name"] in ("stopped", "stopping"):
+        raise typer.Exit(1)  # connect said so; a pending box is reachable in a moment
+    os.execvp("ssh", ["ssh", name, *typer_ctx.args])
 
 
-@app.command("sync", rich_help_panel=ON_THE_BOX)
-def sync_cmd(env: Env):
-    """Copy your home overlay onto the box. Never deletes; refuses while agents run."""
-    from .sync import sync
-
-    raise typer.Exit(sync(Context(), env))
-
-
-@app.command("doctor", rich_help_panel=ON_THE_BOX)
-def doctor_cmd(env: Env):
+@app.command("doctor", rich_help_panel=CONNECT)
+def doctor_cmd(name: Name):
     """Check AWS, permissions, SSM, first boot, tools, network and sign-in."""
     from .doctor import doctor
 
-    raise typer.Exit(doctor(Context(), env))
+    raise typer.Exit(doctor(Context(), name))
 
 
-@app.command("hold", rich_help_panel=ON_THE_BOX)
-def hold_cmd(env: Env, duration: Annotated[str, typer.Argument(metavar="DURATION", help="How long: 30m, 8h, 2d, ...")]):
+@app.command("hold", rich_help_panel=CONNECT)
+def hold_cmd(name: Name, duration: Annotated[str, typer.Argument(metavar="DURATION", help="How long: 30m, 8h, 2d, ...")]):
     """Keep the box from idle-stopping for a while."""
-    hold(Context(), env, duration)
+    hold(Context(), name, duration)
 
 
 def main(argv=None):
@@ -516,4 +587,8 @@ def main(argv=None):
         return 1
     except (ConfigError, TimeoutError, RuntimeError) as e:
         ui.fail(str(e))
+        return 1
+    except ClientError as e:
+        err = e.response.get("Error", {})
+        ui.fail(f"AWS {e.operation_name}: {err.get('Code', 'error')}", err.get("Message", ""))
         return 1

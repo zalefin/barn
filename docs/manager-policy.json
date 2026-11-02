@@ -207,7 +207,7 @@
       "Sid": "Doctor",
       "Effect": "Allow",
       "Action": "iam:SimulatePrincipalPolicy",
-      "Resource": "DEVELOPER_ROLE_ARN"
+      "Resource": "MANAGER_ROLE_ARN"
     }
   ]
 }

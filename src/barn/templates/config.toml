@@ -1,10 +1,15 @@
 # barn settings. Written by `barn init`; edit freely. Run `barn init` again for a checklist.
 account = "$account"              # selects accounts/<account>.toml next to this file
-aws_profile = "$aws_profile"      # AWS CLI profile with the developer permissions (may assume a role)
-user = "$user"                    # owner tag and env prefix: ssh $user-<env>
+aws_profile = "$aws_profile"      # AWS CLI profile that assumes barn-manager or barn-guest
+user = "$user"                    # barn:owner on boxes you create (box names are your choice, e.g. $user-dev)
 ssh_public_key = "$ssh_public_key"
 default_size = "m7i.xlarge"       # 4 vCPU, 16 GiB
 passwordless_sudo = true
 idle_hours = 4
 volume_gb = 100
 # shared_home = "~/src/team-dotfiles/home"   # optional team defaults, synced before home/
+# Public keys that may also SSH into boxes you create (pushed by create and sync;
+# remove one and run `barn sync <name>` to revoke it):
+# guest_keys = [
+#   "ssh-ed25519 AAAA... alice",
+# ]

@@ -1,8 +1,9 @@
-"""`sync <env>`: push the optional shared_home, then <barn home>/home/,
-onto the box (PLAN.md section 9.2).
+"""`sync <name>`: push guest_keys into the box's authorized_keys, then the
+optional shared_home and <barn home>/home/ onto the box (PLAN.md 9.2, 23.4).
 
 Local files win; remote files are never deleted; paths not in those
-directories are never touched.
+directories are never touched. The one deletion is a guest key removed from
+guest_keys: the guests block of authorized_keys is rewritten wholesale.
 """
 
 import fnmatch
@@ -10,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 from . import ssh, ui
-from .config import BOX_USER
+from .config import BOX_USER, ConfigError, check_name
 
 CREDENTIAL_PATTERNS = (".credentials.json", "data.sqlite3", "*token*", "*.pem")
 # Processes whose live state files (Kiro's SQLite DB, Claude's credentials) a sync would race.
@@ -72,9 +73,20 @@ def sources(ctx):
     return [d for d in (shared, ctx.home / "home") if d and d.is_dir()]
 
 
-def sync(ctx, env):
-    alias = ctx.alias(env)
+def sync(ctx, name):
+    from .cli import check_owner, push_guest_keys, write_ssh_entry
+
+    alias = check_name(name)
+    with ui.step("Checking owner"):
+        check_owner(ctx, name, "sync", hint="it would overwrite their tokens")
+        inst = ctx.require_instance(name)
+        # The entry may point at an old instance (recreated from another laptop).
+        write_ssh_entry(ctx, name, inst["InstanceId"])
+    if inst["State"]["Name"] != "running":
+        raise ConfigError(f"{name} is {inst['State']['Name']}; run `barn start {name}` first")
     shared = ctx.settings.shared_home_path
+    # Before the agent check: revoking a guest must not wait for agents to finish.
+    push_guest_keys(ctx, name)
 
     hits = credential_files(shared) if shared and shared.is_dir() else []
     if hits:
@@ -86,7 +98,7 @@ def sync(ctx, env):
     with ui.step(f"Checking {alias} for running agents"):
         busy = running_agents(alias)
     if busy:
-        ui.fail("refusing to sync: agents are running on the box; stop them first")
+        ui.fail("not syncing files: agents are running on the box; stop them first")
         ui.block(busy)
         return 1
 

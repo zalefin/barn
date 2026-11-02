@@ -11,7 +11,13 @@ from pathlib import Path
 
 # The login user on every box: Ubuntu's default user (UID 1000, from cloud-init).
 BOX_USER = "ubuntu"
-ENV_NAME = re.compile(r"^[a-z][a-z0-9-]{0,20}$")
+# A box's full name: its SSH alias, hostname and `barn:name` tag (PLAN.md 23.2).
+BOX_NAME = re.compile(r"^[a-z][a-z0-9-]{0,38}[a-z0-9]$")
+# The S3 backend keeps workspaces under env/workspaces/, and the provider cache is
+# state/plugin-cache/ (tf.py); a box with either name would collide.
+RESERVED_NAMES = {"workspaces", "plugin-cache"}
+# One OpenSSH public key on one line: type, base64 blob, optional comment.
+PUBLIC_KEY = re.compile(r"^(ssh-[a-z0-9-]+|ecdsa-sha2-[a-z0-9-]+|sk-[a-z0-9@.-]+) [A-Za-z0-9+/]+=* ?[^\r\n]*$")
 UBUNTU_AMI = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
 # What `barn init` writes for values only the user can know.
 PLACEHOLDER = "CHANGE-ME"
@@ -37,7 +43,7 @@ class Account:
     security_group_id: str
     subnet_ids: list
     ami_ssm_parameter: str = UBUNTU_AMI
-    developer_role_arn: str = ""
+    manager_role_arn: str = ""
     kms_key_id: str = ""
     extra_tags: dict = field(default_factory=dict)
 
@@ -53,6 +59,7 @@ class Settings:
     idle_hours: float = 4
     volume_gb: int = 100
     shared_home: str = ""
+    guest_keys: list = field(default_factory=list)
 
     @property
     def public_key_path(self):
@@ -97,13 +104,21 @@ def _build(cls, path, data, **fixed):
 
 
 def load_settings(home):
-    # BARN_SETTINGS lets one machine act as several developers (testing).
+    # BARN_SETTINGS lets one machine act as several people (testing).
     path = Path(os.environ.get("BARN_SETTINGS") or home / "config.toml")
     if not path.exists():
         raise ConfigError(f"missing {path}; run `barn init`")
     data = tomllib.loads(path.read_text())
     data.setdefault("user", os.environ.get("USER") or getpass.getuser())
-    return _build(Settings, path, data)
+    settings = _build(Settings, path, data)
+    keys = settings.guest_keys
+    if not isinstance(keys, list):
+        raise ConfigError(f"{path}: guest_keys must be a list of public keys")
+    bad = [k for k in keys if not isinstance(k, str) or not PUBLIC_KEY.match(k.strip())]
+    if bad:
+        raise ConfigError(f"{path}: guest_keys entries are not one-line SSH public keys: {bad}")
+    settings.guest_keys = [k.strip() for k in keys]
+    return settings
 
 
 def load_account(home, name):
@@ -115,7 +130,11 @@ def load_account(home, name):
     return _build(Account, path, data, name=name)
 
 
-def check_env_name(env):
-    if not ENV_NAME.match(env):
-        raise ConfigError(f"bad environment name {env!r}: lowercase letters, digits, dashes; start with a letter")
-    return env
+def check_name(name):
+    if not BOX_NAME.match(name) or name in RESERVED_NAMES:
+        raise ConfigError(
+            f"bad box name {name!r}: 2 to 40 lowercase letters, digits and dashes; "
+            "start with a letter, end with a letter or digit"
+            + (f"; {name!r} is reserved" if name in RESERVED_NAMES else "")
+        )
+    return name

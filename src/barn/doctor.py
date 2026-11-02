@@ -1,17 +1,17 @@
-"""`doctor <env>` (PLAN.md section 12). Each check prints pass, warn, or fail."""
+"""`doctor <name>` (PLAN.md section 12). Each check prints pass, warn, or fail."""
 
-import re
 import subprocess
 
 from botocore.config import Config
 
 from . import ssh, ui
-from .cli import FAILED, MARKER, show_console, ssm_online
+from .cli import FAILED, MARKER, show_console, ssm_online, write_ssh_entry
+from .config import check_name
 from .sync import sources
 
 PASS, WARN, FAIL = "pass", "warn", "fail"
 
-# Remote half: runs as the developer on the box and prints `status|check|detail`.
+# Remote half: runs as the box user on the box and prints `status|check|detail`.
 REMOTE = r"""
 say() { printf '%s|%s|%s\n' "$1" "$2" "$3"; }
 if [ -f MARKER ]; then say pass "bootstrap marker" "$(head -1 MARKER)"
@@ -71,14 +71,27 @@ else say fail "kiro signed in" "$(echo "$out" | tail -1 | head -c 120)"; fi
 TTY_CHECK = 'loginctl show-session "$XDG_SESSION_ID" -p Class -p TTY 2>&1 | tr "\\n" " "'
 
 
+def caller_role(arn):
+    """The role name in an assumed-role ARN (arn:aws:sts::1:assumed-role/<role>/<session>), else None."""
+    parts = arn.split(":", 5)
+    if len(parts) == 6 and parts[2] == "sts" and parts[5].startswith("assumed-role/"):
+        return parts[5].split("/")[1]
+    return None
+
+
+def is_manager(caller_arn, manager_role_arn):
+    """Whether the caller is the manager role: the role name in the caller's
+    assumed-role ARN is the last path segment of manager_role_arn."""
+    role = caller_role(caller_arn)
+    return bool(role and manager_role_arn) and role == manager_role_arn.rsplit("/", 1)[-1]
+
+
 def simulate_checks(ctx):
-    """Simulate the permissions the CLI needs on the developer's role (catches a
+    """Simulate the permissions the CLI needs on the manager role (catches a
     silently removed policy), and two it must not have. docs/account-prerequisites.md
     lists them."""
     a = ctx.account
-    role = a.developer_role_arn
-    if not role:
-        return [(WARN, "policy simulation", "skipped: no developer_role_arn in the account file")]
+    role = a.manager_role_arn
     _, part, _, _, acct, _ = role.split(":", 5)
     ec2 = f"arn:{part}:ec2:{a.region}:{acct}"
     ssm = f"arn:{part}:ssm:{a.region}"
@@ -145,11 +158,6 @@ def simulate_checks(ctx):
     return results
 
 
-def box_name(alias):
-    """The hostname first boot gives the box (mirrors the instance root's local.hostname)."""
-    return re.sub(r"[^a-z0-9-]+", "-", alias.lower()).strip("-")[:63]
-
-
 def mnt_refs(ctx):
     hits = []
     for d in sources(ctx):
@@ -176,7 +184,7 @@ def summarize(results):
     return 1 if counts[FAIL] else 0
 
 
-def doctor(ctx, env):
+def doctor(ctx, name):
     results = []
 
     def add(status, check, detail=""):
@@ -186,20 +194,30 @@ def doctor(ctx, env):
     def section(title):
         ui.err.print(f"\n[name]{title}[/]")
 
-    ui.header(ctx.alias(env), ctx.account.region, f"account {ctx.account.name}", f"profile {ctx.settings.aws_profile}")
+    name = check_name(name)
+    ui.header(name, ctx.account.region, f"account {ctx.account.name}", f"profile {ctx.settings.aws_profile}")
     section("AWS")
     try:
         with ui.step("Checking credentials and permissions"):
             ident = ctx.aws.client("sts").get_caller_identity()
-            try:
-                checks = simulate_checks(ctx)
-            except Exception as e:  # noqa: BLE001
-                checks = [(FAIL, "policy simulation", str(e))]
-            inst = ctx.find_instance(env)
+            note = ""
+            if not ctx.account.manager_role_arn:
+                checks = [(WARN, "policy simulation", "skipped: no manager_role_arn in the account file")]
+            elif not is_manager(ident["Arn"], ctx.account.manager_role_arn):
+                checks = []
+                note = f"you are not {ctx.account.manager_role_arn.rsplit('/', 1)[-1]} (manager_role_arn)"
+            else:
+                try:
+                    checks = simulate_checks(ctx)
+                except Exception as e:  # noqa: BLE001
+                    checks = [(FAIL, "policy simulation", str(e))]
+            inst = ctx.find_instance(name)
     except Exception as e:  # noqa: BLE001 - report any credential problem as a failure
         add(FAIL, "aws credentials", str(e))
         return summarize(results)
     add(PASS, "aws credentials", ident["Arn"])
+    if note:
+        ui.info("policy simulation skipped", note)
     for r in checks:
         add(*r)
 
@@ -209,19 +227,20 @@ def doctor(ctx, env):
         return summarize(results)
     add(PASS, "instance running", f"{inst['InstanceId']} {inst['InstanceType']}")
     iid = inst["InstanceId"]
+    write_ssh_entry(ctx, name, iid)  # a recreated box has a new instance ID
     if ssm_online(ctx, iid):
         add(PASS, "ssm online")
     else:
         add(FAIL, "ssm online", "SSM does not report the instance online")
         return summarize(results)
 
-    alias = ctx.alias(env)
+    alias = name
     script = (
         REMOTE.replace("FAILED", FAILED)
         .replace("MARKER", MARKER)
         .replace("REGION", ctx.account.region)
         .replace("SYNCDIR", str(ctx.home / "home"))
-        .replace("BOXNAME", box_name(ctx.alias(env)))
+        .replace("BOXNAME", name)
     )
     try:
         with ui.step("Running checks on the box"):

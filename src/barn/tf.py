@@ -1,6 +1,6 @@
 """Terraform wrapper. The roots ship inside this package and are copied into the
 barn home, so terraform always runs from the same place: one data dir
-per environment and root, state in the account's S3 bucket."""
+per box and root, state in the account's S3 bucket."""
 
 import json
 import os
@@ -58,15 +58,14 @@ def install_roots(home):
 
 
 class Terraform:
-    def __init__(self, home, aws, user, env, root, verbose=False):
+    def __init__(self, home, aws, name, root, verbose=False):
         self.home = home
         self.verbose = verbose
         self.aws = aws
-        self.user = user
-        self.env = env
+        self.name = name
         self.root = root
         self.dir = home / "terraform" / root
-        self.data_dir = home / "state" / f"{user}-{env}" / root
+        self.data_dir = home / "state" / name / root
         self._initialized = False
 
     def _environ(self):
@@ -108,6 +107,11 @@ class Terraform:
             raise TerraformError(f"terraform {args[0]} ({self.root}) failed", log=log, tail=tail)
         return summary("".join(lines))
 
+    @property
+    def state_key(self):
+        """The S3 key of this root's state. The env/ prefix is what the manager policy allows."""
+        return f"env/{self.name}/{self.root}.tfstate"
+
     def init(self):
         if self._initialized:
             return
@@ -119,10 +123,10 @@ class Terraform:
             "-reconfigure",
             "-no-color",
             f"-backend-config=bucket={acct.state_bucket}",
-            f"-backend-config=key=env/{self.user}/{self.env}/{self.root}.tfstate",
+            f"-backend-config=key={self.state_key}",
             f"-backend-config=region={acct.region}",
             "-backend-config=use_lockfile=true",
-            # Keeps any workspace listing under env/, where developers may list.
+            # Keeps any workspace listing under env/, where managers may list.
             "-backend-config=workspace_key_prefix=env/workspaces",
             capture=True,
         )

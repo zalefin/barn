@@ -9,6 +9,11 @@
   installable tool (section 20), then the project was renamed from
   agent-platform to **barn** (section 21). Sections 2–12 describe the current design;
   sections 13–19 are history.
+- **2026-11-02:** managers and guests, and full box names instead of
+  `<user>-<env>` (section 23), implemented in barn and the demo platform and
+  folded into sections 2–12. Sandbox verification status: section 23.10.
+- **Next (not done):** move the user's setup to their laptop with the `zach`
+  admin user as source profile: **`MIGRATION-laptop.md`**.
 - **Source of truth:** this file. `docs/design-log.md` is the verbatim interview
   history with question numbers (Q1–Q47); some of its entries are superseded.
   Use it only to understand *why*. Where they disagree, this file wins.
@@ -21,40 +26,46 @@
 ## 1. Working rules for agents
 
 1. **Git:** never `git add`, `git commit`, or `git push` unless the user asks.
-   The directory is not a git repo yet; ask before running `git init`. Never add
+   Never add
    Claude/Anthropic attribution to commits or MRs. Use `glab` (not `gh`) for
    GitLab; `glab mr create` always gets `--remove-source-branch`.
 2. **Python:** `uv` only (`uv init`, `uv add`, `uv run`, `uv sync`). Never pip,
    poetry, or user-level installs. Dependencies live in the project `.venv`.
 3. **AWS scope:**
-   - The only AWS environment you may *change* is the user's **personal test
-     account**, and only after the user confirms each `terraform apply` /
-     `destroy` (they cost money and are outward-facing).
+   - The only AWS environment you may *change* is the **sandbox account
+     123456789012** (admin profile `zach`, us-east-1; the earlier personal
+     account's profile no longer exists), and only after the user confirms each
+     `terraform apply` / `destroy` and each delete or retag (they cost money and
+     are outward-facing). Read-only calls there are fine.
    - The managed account (profile `managed-dev`) is **read-only and narrow**: the
      user authorized inspecting the developer role only. Do not list or describe
      other resources there without asking. Never apply anything there; the
      account prerequisites are handed to the platforms team.
 4. **Secrets:** never write real tokens or credentials into tracked paths. They
-   belong only in `~/.config/barn/home/` and on the box.
+   belong only in `~/.config/barn/home/` and on the box. Test users' AWS access
+   keys go only into `~/.aws/credentials` (and stay in `test-users`' local,
+   gitignored state).
 5. **Unpinned tools are intentional.** Do not add version pins to vendor install
    scripts (user decision).
 
 ## 2. Goal and scope
 
-A git repo that a handful of developers clone. With it, each developer can:
-create one or more personal EC2 dev boxes in AWS, reach them over SSH tunnelled
+A CLI that a handful of developers install. With it, a **manager** can
+create one or more EC2 dev boxes in AWS, reach them over SSH tunnelled
 through SSM, push their personal config and OAuth tokens to them, and run Kiro
 CLI and Claude Code under **herdr** for long-running headless agent runs they
-detach from and come back to.
+detach from and come back to. A box belongs to its creator; **guests** (and
+other managers) can connect to it to watch or steer its agents or upload files
+(section 23).
 
 The tool manages **only** per-environment home volumes and EC2 instances. It
 assumes the account's network, security group, instance profile, state bucket
 and developer permissions already exist (docs/account-prerequisites.md).
 
 Two deployment targets, same code:
-- **Personal AWS account** (full control): the user tests everything here first.
+- **Sandbox AWS account** (full control): the user tests everything here first.
 - **Managed account** (`managed-dev`, us-east-1): the platforms team
-  provides the prerequisites; developers use their existing SSO role.
+  provides the prerequisites; people use SSO roles carrying the two policies.
 
 **Out of scope for v1:** GitLab integration (the box uses a local `git init`
 only), notifications when runs finish, backups or snapshots of any kind, version
@@ -65,7 +76,7 @@ pinning, a baked AMI, a CloudFormation version of the platform layer, Graviton.
 ```
 laptop (WSL)                                     AWS account
 ------------                                     -----------
-barn CLI (uv tool) -terraform-> S3 state bucket (env/<user>/<env>/...)
+barn CLI (uv tool) -terraform-> S3 state bucket (env/<name>/...)
         |                              volume root  -> EBS gp3 (holds /home/ubuntu)
         |                              instance root -> EC2 Ubuntu 24.04
         |                                                  + execution instance profile
@@ -78,8 +89,8 @@ on-box systemd timer: idle check -> `shutdown` (instance stops, volume kept)
 
 Two Terraform roots, shipped inside the Python package and copied into
 `~/.config/barn/terraform/` on every run (terraform always runs there):
-- `volume` — per environment.
-- `instance` — per environment. Destroying it leaves the volume (and the home
+- `volume` — per box.
+- `instance` — per box. Destroying it leaves the volume (and the home
   directory) intact.
 
 Account setup is out of scope. A demo implementation of the prerequisites
@@ -93,16 +104,18 @@ PLAN.md                     this file
 README.md                   developer quickstart
 pyproject.toml, uv.lock     the CLI (console script: barn; `uv tool install`)
 src/barn/         CLI package
-  terraform/volume/         per-env root (package data)
-  terraform/instance/       per-env root (package data)
+  terraform/volume/         per-box root (package data)
+  terraform/instance/       per-box root (package data)
   bootstrap/
     user-data.sh.tftpl      first-boot script (templated by the instance root)
     idle-check.sh           on-box idle logic (installed by user-data)
     idle-check.service/.timer
+    authorized_keys.py      owner/guests blocks of authorized_keys (first boot and the CLI)
 tests/                      pytest
 docs/
   account-prerequisites.md  what an account must provide; the account file
-  developer-policy.json     the developer IAM policy, with placeholders
+  manager-policy.json       the manager IAM policy, with placeholders
+  guest-policy.json         the guest IAM policy, with placeholders
   design-log.md             interview history (historical)
 src/barn/templates/         config.toml, account.toml, env written by `barn init`
 ```
@@ -114,7 +127,7 @@ config.toml                 settings (section 11.2)
 accounts/<name>.toml        account file (section 11.1)
 home/                       personal overlay synced onto the box (tokens, config)
 terraform/, bootstrap/      managed copies of the package's roots; never edited
-state/<user>-<env>/<root>/  TF_DATA_DIR per environment and root
+state/<name>/<root>/        TF_DATA_DIR per box and root
 state/plugin-cache/         TF_PLUGIN_CACHE_DIR
 ```
 
@@ -123,10 +136,10 @@ state/plugin-cache/         TF_PLUGIN_CACHE_DIR
 The CLI assumes these exist; docs/account-prerequisites.md is the full contract:
 subnets with egress to the internet and the SSM endpoints, a security group
 (no inbound needed), an EC2 instance profile with `AmazonSSMManagedInstanceCore`,
-an S3 state bucket, an Ubuntu 24.04 AMI SSM parameter, and an AWS CLI profile
-per developer carrying the developer policy (section 6.2). The CLI never
-creates, assumes or modifies IAM roles; if the permissions live on a role, the
-developer's AWS CLI profile assumes it.
+an S3 state bucket, an Ubuntu 24.04 AMI SSM parameter, the roles
+`barn-manager` and `barn-guest` (section 6.2), and an AWS CLI profile per
+person and role. The CLI never creates, assumes or modifies IAM roles; each
+person's AWS CLI profile assumes their role.
 
 ## 6. IAM
 
@@ -135,14 +148,20 @@ developer's AWS CLI profile assumes it.
 | Key | Value |
 |---|---|
 | `barn` | `true` |
-| `barn:owner` | developer username |
-| `barn:env` | environment name |
+| `barn:name` | box name (section 7.1) |
+| `barn:owner` | creator's `user` (informational, and the owner guard) |
 
 Plus `extra_tags` from the account file.
 
-### 6.2 Developer policy (`docs/developer-policy.json`)
+### 6.2 Manager and guest policies
 
-Scoped so developers can only touch resources tagged `barn=true`:
+`docs/guest-policy.json`: `ec2:DescribeInstances`, `ec2:DescribeVolumes`,
+`ssm:DescribeInstanceInformation` on `*`, plus the manager policy's two
+`StartSshSession*` statements verbatim. Nothing else.
+
+`docs/manager-policy.json` (the earlier "developer policy"; sections 18 and 22
+list later changes), scoped so managers can only touch resources tagged
+`barn=true`:
 
 - **Read:** `ec2:Describe*`, `ssm:GetParameter` on the AMI public parameter,
   `sts:GetCallerIdentity`.
@@ -169,7 +188,8 @@ Scoped so developers can only touch resources tagged `barn=true`:
 - **State:** `s3:ListBucket` on the state bucket (prefix `env/`);
   `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` on `env/*` (lockfiles need
   delete).
-- **Doctor:** `iam:SimulatePrincipalPolicy` on the developer's own role.
+- **Doctor:** `iam:SimulatePrincipalPolicy` on the manager role
+  (`MANAGER_ROLE_ARN`).
 
 ### 6.3 Known role facts (managed account, verified 2026-10-23)
 
@@ -186,13 +206,17 @@ attaches the developer policy.
 
 ### 7.1 Naming and state
 
-- Environment ID: `<user>-<env>`. A developer may have several.
-- State keys: `env/<user>/<env>/volume.tfstate` and
-  `env/<user>/<env>/instance.tfstate`, passed with `-backend-config` at init.
+- Box name: chosen by the manager in full (`barn create zach-dev`),
+  `^[a-z][a-z0-9-]{0,38}[a-z0-9]$`, unique per account, not `workspaces` or
+  `plugin-cache`. It is
+  the SSH alias, the hostname, the `barn:name` tag and `Name = barn-<name>`.
+  A person may have several boxes.
+- State keys: `env/<name>/volume.tfstate` and `env/<name>/instance.tfstate`,
+  passed with `-backend-config` at init.
 - The CLI copies the packaged roots into `~/.config/barn/terraform/`
   (only changed files, atomically) and runs terraform with
   `-chdir=<home>/terraform/<root>` and
-  `TF_DATA_DIR=<home>/state/<user>-<env>/<root>`, so environments never share a
+  `TF_DATA_DIR=<home>/state/<name>/<root>`, so boxes never share a
   `.terraform` directory and the location never depends on a checkout.
 
 ### 7.2 Volume root
@@ -215,7 +239,7 @@ attaches the developer policy.
   `shutdown` stops (never terminates) the instance.
 - `aws_volume_attachment` to the volume from the volume root (read via that
   root's outputs, passed by the CLI as variables).
-- Variables: `user`, `env`, `ssh_public_key`, `passwordless_sudo`
+- Variables: `user` (owner tag), `name`, `ssh_public_key`, `passwordless_sudo`
   (default `true`; changing it means destroy + recreate the instance),
   `idle_hours` (default 4), `instance_type`, plus account-file values.
 - Outputs: `instance_id`.
@@ -235,9 +259,10 @@ idempotent against an existing home volume. Order matters:
    `nofail`, mount at `/home/ubuntu`.
 3. **The login user is Ubuntu's default `ubuntu`** (user decision,
    2026-10-25: UID 1000 from cloud-init, the same on every box, matches
-   container images). The developer's name is only the owner tag and env
-   prefix. Install
-   the SSH public key into `~/.ssh/authorized_keys`. Passwordless sudo via
+   container images). The creator's name is only the owner tag. Write
+   the owner's SSH public key into the owner block of `~/.ssh/authorized_keys`
+   (section 23.4: other blocks and hand-added keys are kept; a file with no
+   barn blocks is replaced). Passwordless sudo via
    `/etc/sudoers.d/` only if `passwordless_sudo` is true.
 4. **[SPEC] Stable SSH host keys:** if
    `/home/ubuntu/.barn/hostkeys/` exists (root-owned, 0700), copy those
@@ -269,20 +294,25 @@ herdr is **not** started at boot. The developer runs `herdr` after SSH.
 ### 9.1 SSH over SSM
 
 The CLI writes a managed file `~/.ssh/barn.conf` and makes sure
-`~/.ssh/config` has `Include barn.conf` at the top. One entry per
-environment:
+`~/.ssh/config` has `Include barn.conf` at the top. One entry per box,
+written by `create`, `start`, `connect`, `ssh` and `doctor` with the caller's
+own key and profile:
 
 ```
-Host <user>-<env>
+Host <name>
   HostName <instance-id>
   User ubuntu
   ProxyCommand aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p --profile <profile> --region <region>
 ```
 
-`<profile>` is the developer's `aws_profile`. The instance ID changes on
+`<profile>` is the caller's `aws_profile`. The instance ID changes on
 recreate; the CLI rewrites the entry.
 
-### 9.2 Sync (`sync <env>`)
+### 9.2 Sync (`sync <name>`)
+
+- Manager only, and only on the caller's own box (owner guard, 23.4).
+- First rewrites the guests block of the box's `authorized_keys` from
+  `guest_keys`, even if it then skips the file copy because agents run.
 
 - `rsync` over the SSH entry: first the optional `shared_home` (team
   defaults), then `~/.config/barn/home/`, onto `/home/ubuntu`.
@@ -339,21 +369,23 @@ function with unit tests; the shell script only gathers inputs.
 
 Python package using `uv`; wraps terraform via subprocess and uses boto3 for
 waits, lookups and console output. boto3, terraform and the SSH ProxyCommand
-all use the developer's `aws_profile` unchanged. Runs from any directory.
+all use the caller's `aws_profile` unchanged. Runs from any directory.
 Built on Typer; output (spinners, colors, tables) goes through `barn.ui` on
 rich. Terraform apply/destroy output is written to
-`<home>/state/<user>-<env>/<root>/<command>.log` unless `-v` is given.
+`<home>/state/<name>/<root>/<command>.log` unless `-v` is given. AWS
+errors (for example a guest calling `start`) print as one line.
 
-| Command | Behavior |
-|---|---|
-| `create <env> [--size T]` | apply volume root, then instance root; wait for SSM online and bootstrap marker; write SSH entry. Re-run with new `--size` to resize. |
-| `destroy <env> [--volume]` | destroy instance root; with `--volume`, also the volume root after typed confirmation. |
-| `stop <env>` / `start <env>` | boto3 stop/start; wait for state. |
-| `list` | this developer's environments: state, type, uptime, rough hourly cost. |
-| `ssh <env>` | exec `ssh <user>-<env>`. |
-| `sync <env>` | section 9.2. |
-| `doctor <env>` | section 12. |
-| `hold <env> <duration>` | writes `~/.barn/hold-until` on the box over SSH. |
+| Command | Who | Behavior |
+|---|---|---|
+| `create <name> [--size T]` | manager | owner guard; apply volume root, then instance root; wait for SSM online and bootstrap marker; write SSH entry; push `guest_keys`. Re-run with new `--size` to resize. |
+| `destroy <name> [--volume] [--force]` | manager | owner guard (unless `--force`); destroy instance root; with `--volume`, also the volume root after typed confirmation. |
+| `stop <name>` / `start <name>` | manager | boto3 stop/start on any box; wait for state. |
+| `sync <name>` | manager | section 9.2. |
+| `list` | anyone | every barn box in the account (`tag:barn` only): owner (yours marked), state, type, uptime, rough hourly cost. |
+| `connect <name>` | anyone | find the box by `barn:name`, write its SSH entry with the caller's key and profile; say if it is stopped. |
+| `ssh <name>` | anyone | `connect`, then exec `ssh <name>` (exits 1 if the box is not running). |
+| `doctor <name>` | anyone | section 12. |
+| `hold <name> <duration>` | anyone | writes `~/.barn/hold-until` on the box over SSH. |
 
 ### 11.1 Account file (`~/.config/barn/accounts/<name>.toml`)
 
@@ -367,7 +399,7 @@ execution_instance_profile = "..."
 security_group_id = "sg-..."
 subnet_ids = ["subnet-..."]
 ami_ssm_parameter = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"  # optional, default shown
-developer_role_arn = ""           # optional: role doctor simulates the policy on
+manager_role_arn = ""             # optional: the manager role; doctor simulates its policy
 kms_key_id = ""                   # optional
 [extra_tags]
 ```
@@ -377,23 +409,25 @@ kms_key_id = ""                   # optional
 ```toml
 account = "personal"              # selects accounts/<account>.toml
 aws_profile = "..."               # the developer's own source profile
-user = "zach"                     # owner tag and env prefix; default $USER
+user = "zach"                     # barn:owner of boxes you create; default $USER
 ssh_public_key = "~/.ssh/id_ed25519.pub"
 default_size = "m7i.xlarge"
 passwordless_sudo = true
 idle_hours = 4
 volume_gb = 100
 shared_home = ""                  # optional team defaults dir, synced first
+guest_keys = []                   # optional: public keys authorized on boxes you create
 ```
 
-## 12. `doctor <env>`
+## 12. `doctor <name>`
 
 Each check prints pass, warn, or fail; exit non-zero on any fail.
 
 - AWS credentials valid (via `aws_profile`).
 - IAM policy simulation of section 6.2 actions on the account file's
-  `developer_role_arn` (catches a silently removed policy); skipped with a
-  warning when unset. A role that allows shell sessions is a warning.
+  `manager_role_arn` (catches a silently removed policy); skipped with a
+  warning when unset, and with a note when the caller's assumed role is not
+  the manager role (guests). A role that allows shell sessions is a warning.
 - Instance running; SSM reports it online.
 - Bootstrap marker present; if not, show the console output tail.
 - SSM agent snap service running; refresh hold present (warn if missing).
@@ -622,3 +656,302 @@ notifications.
 - Known, documented, not fixed: developers in one account can take over each
   other's boxes and volumes (no owner binding), `AWS-StartSSHSession` forwards
   any port, no proxy support, no cost limits.
+
+## 23. Managers and guests; full box names (2026-11-02)
+
+Interview 2026-10-30 to 2026-11-02. Goal: several developers can connect to
+one person's box (to watch or steer its agents, or upload files), while only
+managers create and destroy boxes. Developers fully trust each other: there is
+**no security separation between people**, only between the two roles.
+
+### 23.1 Decisions
+
+| # | Decision |
+|---|---|
+| 1 | A box belongs to one person (its creator); others *connect* to it. It is still a single developer's workspace, not a shared one. |
+| 2 | Two IAM roles: **`barn-manager`** (today's developer policy: create, destroy, start, stop, resize, state, connect) and **`barn-guest`** (find boxes and open the SSH tunnel, nothing else). |
+| 3 | People are IAM users with their own access keys. Their AWS CLI profiles assume a role (`role_arn` + `source_profile`). barn still never assumes roles itself. |
+| 4 | No owner binding in IAM: any manager can manage any box. Accepted (full trust). barn adds an *accident* guard, not a security one (23.4). |
+| 5 | Sandbox users: `zach` and `alice` may assume both roles; `foo` only `barn-guest`. |
+| 6 | Everyone logs in as `ubuntu` (same user, sudo, same herdr session). Guests can read the owner's tokens and reach the instance role. Accepted. |
+| 7 | Who can SSH in is decided by keys: the owner's key (first boot) plus `guest_keys` from the owner's `config.toml` (pushed over SSH). |
+| 8 | Boxes have **full names chosen by the user** (`barn create zach-dev`), no `<user>-` prefix, so connecting to someone else's box uses the same name everywhere. |
+| 9 | Guests use the same `barn init` and account file as managers. |
+| 10 | A guest cannot start a stopped box (ask a manager). Guests can `hold` it and can shut it down from inside (sudo). |
+| 11 | Naming is "manager" and "guest" everywhere; `developer` is renamed. |
+| 12 | Existing environments are not migrated by barn, except the sandbox volume `barn-zach-a2n`, which is migrated by hand to the box name `zach-a2n` (23.8). |
+
+### 23.2 Names, tags and state
+
+- **Box name:** `^[a-z][a-z0-9-]{0,38}[a-z0-9]$` (2 to 40 characters, no
+  trailing dash). Unique per account. It is the SSH alias, the box's hostname,
+  and the `Name` tag `barn-<name>`.
+- **Tags:** `barn = true`, `barn:name = <name>`, `barn:owner = <user>` (who
+  created it; informational plus the guard in 23.4), plus `extra_tags`.
+  `barn:env` is gone.
+- **State:** `env/<name>/volume.tfstate` and `env/<name>/instance.tfstate`. The
+  `env/` prefix stays so the manager policy's S3 statements are unchanged.
+  Local `TF_DATA_DIR`: `<home>/state/<name>/<root>`; logs alongside.
+- **Terraform variables:** `name` replaces `env`; `user` stays (owner tag).
+- **`user`** in `config.toml` stays optional (default `$USER`) and is used only
+  for `barn:owner` and the guard. It no longer appears in any name.
+- **Old boxes** (`barn:env` tag, state at `env/<user>/<env>/`) are not found.
+  The only one with data is sandbox volume `barn-zach-a2n`, migrated by hand
+  (23.8).
+
+### 23.3 Policies
+
+- `docs/developer-policy.json` → **`docs/manager-policy.json`**, unchanged
+  except the `Doctor` statement's placeholder becomes `MANAGER_ROLE_ARN`.
+- New **`docs/guest-policy.json`**:
+  - `ec2:DescribeInstances`, `ec2:DescribeVolumes`,
+    `ssm:DescribeInstanceInformation` on `*` (`list`, `connect`, `ssh`);
+  - the manager policy's two `StartSshSession*` statements, verbatim.
+- Account file: `developer_role_arn` → **`manager_role_arn`** (`doctor` only).
+  Unknown keys are already an error, so an old file fails with the key named.
+- `docs/account-prerequisites.md`: two roles, a "Managers and guests" section,
+  both policies' tables, and the "does not protect" list restated for two roles
+  (any manager can manage any box; a guest has sudo on boxes it can reach, so
+  it can read the owner's tokens and use the instance role; the tunnel still
+  forwards any port).
+
+### 23.4 CLI
+
+The `<env>` argument becomes `<name>` everywhere. Commands, by who can use them:
+
+| Command | Who | Change |
+|---|---|---|
+| `create <name>` | manager | Refuses if a box or volume with that name has a different `barn:owner` ("owned by alice"). Pushes `guest_keys` after first boot. |
+| `destroy <name> [--volume]` | manager | Refuses on another owner's box unless `--force`. |
+| `start` / `stop <name>` | manager | Work on any box (no owner check). |
+| `sync <name>` | manager | Refuses on another owner's box (it would overwrite their tokens). Pushes `guest_keys` even when it refuses to copy files because agents are running. |
+| `list` | anyone | **All** barn boxes in the account, with an owner column; your own marked. Filters by `tag:barn` only. |
+| `connect <name>` | anyone | **New.** Finds the box by `barn:name`, writes its `~/.ssh/barn.conf` entry (with *your* `aws_profile` and key), says if it is stopped. Afterwards plain `ssh`, `scp`, `rsync` and `herdr --remote <name>` work. |
+| `ssh <name>` | anyone | Does what `connect` does (refreshing a stale instance ID), then execs `ssh <name>`. |
+| `hold <name> <d>` | anyone | Unchanged (over SSH). |
+| `doctor <name>` | anyone | The IAM simulation runs only if the caller's assumed role is `manager_role_arn`; otherwise it is skipped with a note. On-box checks run for everyone. |
+
+Settings (`config.toml`):
+
+```toml
+guest_keys = [                    # optional; authorized on every box you create
+  "ssh-ed25519 AAAA... alice",
+]
+```
+
+**`authorized_keys` layout** (on the home volume, so it survives stop/start):
+
+```
+# >>> barn owner >>>       written by first boot from ssh_public_key
+# <<< barn owner <<<
+# >>> barn guests >>>      rewritten wholesale by create and sync from guest_keys
+# <<< barn guests <<<
+```
+
+First boot replaces only the owner block and keeps everything else (today it
+overwrites the file), so guests survive `destroy`/`create`, and a key someone
+added by hand outside the blocks is kept. A file with no barn blocks at all is
+the pre-23 layout (only the owner's key, written by the old first boot): first
+boot replaces it wholesale. Removing a key from `guest_keys` and
+running `sync` revokes it: the one place `sync` deletes something.
+
+### 23.5 Demo platform (`~/source/barn-platform-minimal`)
+
+- Policy module outputs `manager_policy_json` and `guest_policy_json`.
+- `terraform/platform`: `developer_role_mode` → `role_mode` (`create` |
+  `attach`).
+  - **create:** roles `barn-manager` and `barn-guest`, trusting
+    `manager_principal_arns` / `guest_principal_arns`; output
+    `aws_profiles`, a ready-to-paste `~/.aws/config` snippet per role (with
+    `role_session_name` set to the user name for readable CloudTrail; not
+    enforced).
+  - **attach:** `existing_manager_role_name` and an optional
+    `existing_guest_role_name`.
+  - Account file output uses `manager_role_arn`.
+- `terraform/test-users` (sandbox): IAM users `alice` and `foo` with access
+  keys, allowed to `sts:AssumeRole` the two roles. `zach` is the existing admin
+  IAM user and is only referenced by ARN. `barn-dev`, `barn-ssm`, the stand-in
+  existing role and `deny_actions` are removed (attach mode stays in the module,
+  untested this round).
+- `sandbox.tfvars`: `role_mode = "create"`; managers `zach`, `alice`; guests
+  `zach`, `alice`, `foo`.
+- `handoff/` and `e2e/`: regenerated for the new roles and names.
+
+### 23.6 Implementation order
+
+1. **Naming** (barn): names, tags, state keys, `TF_DATA_DIR`, alias = name,
+   hostname, `list` shows all boxes, owner guard. Tests: name validation,
+   guard, `barn.conf` entries.
+2. **Guests on the box:** owner block in first boot; `guest_keys`; key push in
+   `create` and `sync`. Tests: block rewrite (add, remove, hand-added keys kept).
+3. **`connect`**, and `ssh` refreshing the entry.
+4. **Policies and docs:** rename to manager, add the guest policy,
+   `manager_role_arn`, `doctor` skip, README ("Guests" section, new names),
+   `account-prerequisites.md`.
+5. **Demo platform** (23.5).
+6. **Migrate `barn-zach-a2n`** (23.8).
+7. **Sandbox verification** (23.7). Every `terraform apply`/`destroy` in the
+   sandbox is confirmed with the user first.
+
+### 23.7 Verification (sandbox account 123456789012)
+
+- Before: migrate `barn-zach-a2n` (23.8).
+- Apply `test-users` and `platform`; set up profiles for `zach`, `alice`
+  (manager and guest) and `foo` (guest).
+- As `zach` (manager): `create zach-dev` with `alice`'s and `foo`'s keys in
+  `guest_keys`.
+- As `foo` (guest), these work: `list`, `connect zach-dev`, `ssh`, an `rsync`
+  upload, `hold`, `herdr --remote zach-dev`, and herdr attached at the same time
+  as `zach` (**unknown whether herdr allows two clients at once**; if not,
+  document "take turns").
+- As `foo`, these are denied: `start`, `stop`, `create`, `destroy`, reading
+  `env/` state, a shell-document session.
+- As `alice` (manager): `create alice-dev`; `zach` connects to it as a guest.
+  `zach`'s `create alice-dev` and `sync alice-dev` are refused by the guard;
+  `stop`/`start alice-dev` work.
+- Remove `foo`'s key from `guest_keys`, `sync`: `foo` can no longer SSH in.
+- CloudTrail event history for `barn-guest`: exactly the guest policy's
+  actions, nothing denied in normal use.
+- `destroy --volume` `alice-dev` and `zach-dev` at the end. `zach-a2n` stays.
+
+### 23.8 Migrating `barn-zach-a2n` (one-off, sandbox)
+
+The volume `vol-0ccccccccccccc001` (us-east-1a, 100 GB, available) holds data
+that must be kept. It becomes the box **`zach-a2n`**: the same string as its
+old SSH alias, hostname and `Name` tag (`barn-zach-a2n`), so the host keys saved
+on the volume still match the `known_hosts` entry for `zach-a2n` and nothing
+changes for SSH. A one-off runbook, not a barn command: retagging `barn:*` is
+denied to managers by design, so steps 1 and 3 use the admin profile `zach`.
+Confirm each step that changes AWS with the user.
+
+1. **Retag** (admin): add `barn:name = zach-a2n`, delete `barn:env`. `Name`,
+   `barn` and `barn:owner = zach` already match the new layout.
+2. **Move state:** copy `env/zach/a2n/volume.tfstate` to
+   `env/zach-a2n/volume.tfstate` (resource address `aws_ebs_volume.home` is
+   unchanged). The old `instance.tfstate` is empty (the box was destroyed); it
+   is not copied.
+3. **Clean up** (admin): delete `env/zach/a2n/*`, and the empty (181–182 byte)
+   leftovers `env/zach/{e2e,hn,nv,probe,ss}/*`. Their local data dirs
+   (`~/.config/barn/state/zach-*`) can go too.
+4. **Check before applying:** with the new barn, `terraform plan` on the
+   volume root for `zach-a2n` must show **no changes**. A diff there means a
+   tag or variable mismatch; fix it, never apply a replacement.
+5. **`barn create zach-a2n`** (as `zach`'s manager profile, `user = zach`):
+   volume root no-op, new instance, attach, first boot. First boot sees the
+   pre-23 `authorized_keys` and rewrites it into blocks; host keys come from
+   `~/.barn/hostkeys`.
+6. **Verify:** `ssh zach-a2n` connects without a host-key warning, the files
+   are there, `barn doctor zach-a2n` is green.
+
+Do this after implementation steps 1–2 (23.6) and the sandbox platform apply,
+since the new roles are needed for step 5.
+
+### 23.9 Handoff notes (read before starting section 23)
+
+**Facts collected 2026-11-02 (sandbox, read-only):**
+- IAM users: `zach` (admin) exists; `barn-dev` and `barn-ssm` exist (to be
+  removed); `alice` and `foo` do **not** exist yet. Roles: `barn-execution`,
+  `barn-test-existing-developer` (to be removed).
+- State bucket `<state-bucket>`: `env/zach/a2n/volume.tfstate`
+  holds `zach-a2n`'s volume; everything else under `env/zach/` is empty
+  leftovers (23.8 step 3).
+- `barn-platform-minimal` platform state is local
+  (`terraform/platform/terraform.tfstate`); apply with `AWS_PROFILE=zach`.
+
+**Hard stop on the platform re-apply:** switching `sandbox.tfvars` to
+`role_mode = "create"` must change **only IAM** (new roles and policies; the
+stand-in role and its attachment removed). If the plan replaces or destroys the
+VPC, subnets, security group, execution role/instance profile or the state
+bucket, stop and fix the Terraform (`moved` blocks, unchanged resource
+addresses). `zach-a2n`'s volume is pinned to its subnet's AZ (us-east-1a), and
+the bucket holds all state.
+
+**Small details the sections above leave implicit:**
+- The name `workspaces` is reserved (it would collide with the backend's
+  `workspace_key_prefix = env/workspaces`); validation rejects it.
+- `doctor`'s "caller is the manager role" test: the role name in the
+  `sts get-caller-identity` ARN (`assumed-role/<role>/<session>`) equals the
+  last path segment of `manager_role_arn`.
+- Rename everywhere `env` reaches the user: CLI help, errors, the idle-check
+  `wall` message (`barn hold <name> <duration>`), README, templates.
+- Templates: `templates/config.toml` gets a commented `guest_keys` example;
+  `templates/account.toml` gets `manager_role_arn`. The platform's
+  `account.toml.tftpl` and `handoff/accounts/sandbox.toml` likewise.
+- `barn-platform-minimal/e2e/` scripts (`run.sh`, `sniff.py`, `deny.sh`)
+  refer to `barn-dev` and the stand-in role; update or drop them along with
+  `deny_actions`.
+- Migration step 4 (23.8): barn has no plan command. Run `terraform plan
+  -detailed-exitcode` on the volume root with exactly the backend config from
+  `Terraform.init` (key `env/zach-a2n/volume.tfstate`) and the variables
+  `volume_vars` would pass (subnet = the volume's recorded `subnet_id` output).
+  Exit code 0 is required.
+- `scripts/check.sh` (pytest, terraform fmt/validate, shellcheck) must pass
+  before handing back.
+
+**Testing several people on one machine:**
+- One `BARN_HOME` per person, e.g.
+  `barn-platform-minimal/e2e/people/{zach,alice,foo}/` (gitignore their
+  `state/`, `terraform/`, `bootstrap/`, and any key files), each with its own
+  `config.toml` (`user`, `aws_profile`, `ssh_public_key`) and the sandbox
+  account file.
+- One SSH key pair per person (`ssh-keygen -t ed25519 -N ''`) inside that
+  person's directory. `alice` and `foo` public keys go into zach's
+  `guest_keys`; zach's into alice's.
+- AWS profiles: source profiles `zach` (exists), `alice`, `foo` (keys from
+  `terraform output -json access_keys`), and role profiles
+  `barn-zach-manager`, `barn-zach-guest`, `barn-alice-manager`,
+  `barn-alice-guest`, `barn-foo-guest` (from the platform's `aws_profiles`
+  output). Persons test the guest path with their `-guest` profile.
+- `~/.ssh/barn.conf` is shared by every `BARN_HOME` on the machine: an alias's
+  entry carries whoever last ran `connect`/`ssh`/`create`. Run each person's
+  steps in sequence and re-run `barn connect <name>` as that person before
+  plain `ssh`/`rsync`/`herdr --remote`. For the two-herdr-clients test, two
+  terminals as the same person are enough.
+
+### 23.10 Implementation and verification (2026-11-02)
+
+Implemented as specified in 23.1–23.9, with these additions:
+- `bootstrap/authorized_keys.py` is the one implementation of the owner/guests
+  blocks: first boot installs and runs it, and `create`/`sync` send it over SSH
+  to rewrite the guests block. Writing guests onto a file with no blocks wraps
+  the old lines in an owner block (they are the pre-23 owner key). An orphaned
+  begin marker is treated as plain text.
+- `plugin-cache` is reserved as well as `workspaces` (`state/plugin-cache/` is
+  the provider cache).
+- `sync`, `ssh` and `doctor` refresh the box's `barn.conf` entry first; `sync`
+  needs a running box. `ssh` refuses only `stopped`/`stopping`. `~/.ssh/barn.conf`
+  writes are locked and atomic (several people/boxes on one laptop).
+- AWS errors print as one line (e.g. a guest's `barn stop`).
+- `scripts/check.sh` falls back to `uvx --from shellcheck-py shellcheck`.
+- Test homes use `t3.medium` and `volume_gb = 25`.
+
+Sandbox (123456789012), all as specified:
+- IAM: `test-users` then `platform` (6 add, 2 destroy, IAM only) then
+  `test-users` again. **Deviation:** `barn-dev` and `barn-ssm` were removed from
+  `test-users` state with `terraform state rm`, not destroyed (user: keep
+  existing access keys alive); later the same day, at the user's request, both
+  users, their access keys and inline policies, and their local AWS profiles
+  were deleted.
+  Local state backups: `terraform.tfstate.pre-23.bak` in both roots.
+- Migration (23.8): retag, state copy, cleanup, step-4 plan exit 0,
+  `barn create zach-a2n`: volume no-op, files intact, host key is the one
+  saved 2026-10-29, `authorized_keys` converted to blocks, `doctor` 51/51 as
+  `barn-manager`.
+- 23.7: as `foo` (guest) `list`, `connect`, `ssh`, `rsync` upload, `hold`,
+  `doctor` (simulation skipped with a note) work; `start`, `stop`, `create`,
+  `destroy`, state reads, shell and port-forward documents, `SendCommand`,
+  console output are denied. **Two herdr clients at once work** (both see the
+  same panes and can type). `zach` as guest connects to `alice-dev`;
+  `zach`'s `create`/`sync`/`destroy alice-dev` are refused by the guard;
+  `stop`/`start alice-dev` work; a guest's `ssh` to a stopped box exits 1 with
+  "ask a manager". Removing `foo` from `guest_keys` + `sync` (while a fake
+  `claude` ran) revoked `foo`; `alice` and a hand-added key stayed, also
+  across `destroy`/`create` (strict host key checking passed). CloudTrail for
+  `barn-guest`: only DescribeInstances, DescribeVolumes,
+  DescribeInstanceInformation, StartSession, GetCallerIdentity in normal use;
+  the only denials were the deliberate negative tests. Both test boxes
+  destroyed with `--volume`; `zach-a2n` kept (running).
+
+## 24. Laptop migration (planned 2026-11-02)
+
+Instructions for the agent on the user's laptop: `MIGRATION-laptop.md`.

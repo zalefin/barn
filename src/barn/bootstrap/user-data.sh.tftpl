@@ -20,7 +20,7 @@ die() { echo "barn bootstrap FAILED: $*"; mkdir -p "$STATE_DIR"; echo "$*" > "$S
 mkdir -p "$STATE_DIR"
 rm -f "$STATE_DIR/bootstrap-done" "$STATE_DIR/bootstrap-failed"
 
-# 0. Hostname: the SSH alias, so prompts say which box this is. cloud-init would
+# 0. Hostname: the box name (also its SSH alias), so prompts say which box this is. cloud-init would
 # reset it on the next start; sudo needs it resolvable.
 step "0 hostname"
 hostnamectl set-hostname "$BOX_NAME" || warn "set-hostname failed"
@@ -70,9 +70,20 @@ fi
 chown "$USER_NAME:$USER_NAME" "$HOME_DIR"
 chmod 0750 "$HOME_DIR"
 install -d -m 0700 -o "$USER_NAME" -g "$USER_NAME" "$HOME_DIR/.ssh" "$HOME_DIR/.barn"
-cat > "$HOME_DIR/.ssh/authorized_keys" <<'BARN_KEY'
+# authorized_keys holds an owner block (this key) and a guests block (pushed by
+# `barn create`/`barn sync` from the owner's guest_keys). Replace only the owner
+# block, so guests and hand-added keys survive destroy/create; a file without
+# barn blocks is the old owner-only layout and is replaced.
+install -d -m 0755 /usr/local/lib/barn
+cat > /usr/local/lib/barn/authorized_keys.py <<'BARN_AK_PY'
+${authorized_keys}
+BARN_AK_PY
+chmod 0755 /usr/local/lib/barn/authorized_keys.py
+cat > "$STATE_DIR/owner-key" <<'BARN_KEY'
 ${ssh_public_key}
 BARN_KEY
+python3 /usr/local/lib/barn/authorized_keys.py "$HOME_DIR/.ssh/authorized_keys" owner "$STATE_DIR/owner-key" \
+  || die "writing authorized_keys failed"
 chown "$USER_NAME:$USER_NAME" "$HOME_DIR/.ssh/authorized_keys"
 chmod 0600 "$HOME_DIR/.ssh/authorized_keys"
 # cloud-init gives ubuntu passwordless sudo; the account has no password, so

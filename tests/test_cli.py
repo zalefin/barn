@@ -4,7 +4,7 @@ from typer.testing import CliRunner
 
 from barn import cli
 from barn.cli import app, parse_duration
-from barn.config import UBUNTU_AMI, ConfigError, check_env_name, load_account, load_settings
+from barn.config import UBUNTU_AMI, ConfigError, check_name, load_account, load_settings
 from barn.sync import changed_files, credential_files, rsync_cmd
 from barn.tf import PACKAGE, install_roots, summary
 from barn.ui import elapsed
@@ -18,11 +18,15 @@ def test_parse_duration():
         parse_duration("8 hours")
 
 
-def test_env_names():
-    assert check_env_name("dev-2") == "dev-2"
-    for bad in ("Dev", "2dev", "a_b", ""):
+def test_box_names():
+    for good in ("zach-dev", "ab", "a2", "zach-a2n", "a" + "b" * 38 + "c"):
+        assert check_name(good) == good
+    too_long = "a" * 41
+    for bad in ("Dev", "2dev", "a_b", "", "a", "dev-", "zach.dev", too_long, "workspaces", "plugin-cache"):
         with pytest.raises(ConfigError):
-            check_env_name(bad)
+            check_name(bad)
+    with pytest.raises(ConfigError, match="reserved"):
+        check_name("workspaces")
 
 
 @pytest.fixture
@@ -32,38 +36,49 @@ def calls(monkeypatch):
     monkeypatch.setattr(cli, "Context", lambda verbose=False: f"ctx(verbose={verbose})")
     for name in ("create", "destroy", "hold"):
         monkeypatch.setattr(cli, name, lambda *a, _n=name: seen.append((_n, *a)) or 0)
-    monkeypatch.setattr(cli, "check_env_name", lambda env: env)
     monkeypatch.setattr(cli.os, "execvp", lambda *a: seen.append(("execvp", *a)))
     return seen
 
 
 def test_commands_parse(calls):
     run = CliRunner().invoke
-    assert run(app, ["create", "dev", "--size", "t3.micro", "-v"]).exit_code == 0
-    assert run(app, ["destroy", "dev", "--volume"]).exit_code == 0
-    assert run(app, ["hold", "dev", "8h"]).exit_code == 0
+    assert run(app, ["create", "zach-dev", "--size", "t3.micro", "-v"]).exit_code == 0
+    assert run(app, ["destroy", "zach-dev", "--volume"]).exit_code == 0
+    assert run(app, ["destroy", "alice-dev", "--force"]).exit_code == 0
+    assert run(app, ["hold", "zach-dev", "8h"]).exit_code == 0
     assert calls == [
-        ("create", "ctx(verbose=True)", "dev", "t3.micro"),
-        ("destroy", "ctx(verbose=False)", "dev", True),
-        ("hold", "ctx(verbose=False)", "dev", "8h"),
+        ("create", "ctx(verbose=True)", "zach-dev", "t3.micro"),
+        ("destroy", "ctx(verbose=False)", "zach-dev", True, False),
+        ("destroy", "ctx(verbose=False)", "alice-dev", False, True),
+        ("hold", "ctx(verbose=False)", "zach-dev", "8h"),
     ]
 
 
-def test_ssh_passes_extra_args_through(calls, monkeypatch):
-    class Ctx:
-        def alias(self, env):
-            return f"zach-{env}"
-
-    monkeypatch.setattr(cli, "Context", Ctx)
-    r = CliRunner().invoke(app, ["ssh", "dev", "-N", "-L", "8080:localhost:8080"])
+def test_ssh_refreshes_entry_and_passes_extra_args_through(calls, monkeypatch):
+    monkeypatch.setattr(cli, "Context", lambda: "ctx")
+    state = {"Name": "running"}
+    monkeypatch.setattr(cli, "connect", lambda ctx, name, quiet: calls.append(("connect", name)) or {"State": state})
+    r = CliRunner().invoke(app, ["ssh", "alice-dev", "-N", "-L", "8080:localhost:8080"])
     assert r.exit_code == 0, r.output
-    assert calls == [("execvp", "ssh", ["ssh", "zach-dev", "-N", "-L", "8080:localhost:8080"])]
+    assert calls == [
+        ("connect", "alice-dev"),
+        ("execvp", "ssh", ["ssh", "alice-dev", "-N", "-L", "8080:localhost:8080"]),
+    ]
+    calls.clear()
+    state["Name"] = "pending"  # just started: reachable in a moment
+    assert CliRunner().invoke(app, ["ssh", "alice-dev"]).exit_code == 0
+    assert calls[-1][0] == "execvp"
+    calls.clear()
+    state["Name"] = "stopped"
+    assert CliRunner().invoke(app, ["ssh", "alice-dev"]).exit_code == 1
+    assert calls == [("connect", "alice-dev")]
 
 
 def test_help_lists_every_command():
     out = CliRunner().invoke(app, ["--help"]).output
-    for name in ("create", "destroy", "start", "stop", "list", "ssh", "sync", "doctor", "hold"):
+    for name in ("create", "destroy", "start", "stop", "list", "connect", "ssh", "sync", "doctor", "hold"):
         assert name in out
+    assert "manager" in out.lower() and "anyone" in out
 
 
 def test_terraform_summary_and_elapsed():
@@ -95,7 +110,8 @@ def test_load_settings_and_account(tmp_path, monkeypatch):
     assert s.default_size == "m7i.xlarge" and s.shared_home_path is None
     a = load_account(tmp_path, s.account)
     assert a.name == "personal" and a.extra_tags == {"cost-center": "42"}
-    assert a.ami_ssm_parameter == UBUNTU_AMI and a.developer_role_arn == ""
+    assert a.ami_ssm_parameter == UBUNTU_AMI and a.manager_role_arn == ""
+    assert s.guest_keys == []
 
 
 def test_load_settings_rejects_unknown_keys(tmp_path, monkeypatch):
@@ -113,6 +129,10 @@ def test_load_account_rejects_missing_and_stale_keys(tmp_path):
     # Written by the old platform output; the CLI no longer assumes roles.
     (tmp_path / "accounts" / "a.toml").write_text(ACCOUNT + 'developer_policy_role_arn = "arn:r"\n')
     with pytest.raises(ConfigError, match="unknown keys"):
+        load_account(tmp_path, "a")
+    # Before managers and guests (PLAN.md 23.3): the error names the old key.
+    (tmp_path / "accounts" / "a.toml").write_text(ACCOUNT + 'developer_role_arn = "arn:r"\n')
+    with pytest.raises(ConfigError, match="developer_role_arn"):
         load_account(tmp_path, "a")
 
 
@@ -198,12 +218,3 @@ def test_init_copies_account_file(tmp_path, monkeypatch):
     assert load_account(home, load_settings(home).account).security_group_id == "sg-1"
     with pytest.raises(ConfigError, match="no such account file"):
         scaffold(tmp_path / "other", account_file=tmp_path / "missing.toml")
-
-
-def test_box_name_is_a_valid_hostname():
-    from barn.doctor import box_name
-
-    assert box_name("zach-dev") == "zach-dev"
-    assert box_name("John.Smith_2-dev") == "john-smith-2-dev"
-    assert box_name("_x-dev") == "x-dev"
-    assert len(box_name("a" * 80 + "-dev")) == 63

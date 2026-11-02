@@ -3,16 +3,23 @@ variable "region" {
 }
 
 variable "user" {
-  description = "Developer name: owner tag and resource names (the box's login user is always ubuntu)."
+  description = "Who created the box: the barn:owner tag (the login user is always ubuntu)."
   type        = string
 }
 
-variable "env" {
-  type = string
+variable "name" {
+  description = "The box's full name: SSH alias, hostname and barn:name tag."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{0,38}[a-z0-9]$", var.name)) && !contains(["workspaces", "plugin-cache"], var.name)
+    error_message = "2 to 40 lowercase letters, digits and dashes, starting with a letter; not \"workspaces\" or \"plugin-cache\"."
+  }
 }
 
 variable "ssh_public_key" {
-  type = string
+  description = "The owner's key; first boot writes it into the owner block of authorized_keys."
+  type        = string
 }
 
 variable "passwordless_sudo" {

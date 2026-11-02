@@ -23,3 +23,17 @@ def test_write_host_none_removes(tmp_path):
     ssh.write_host("a-b", None, tmp_path)
     assert "Host a-b" not in (tmp_path / "barn.conf").read_text()
 
+
+
+def test_write_host_concurrent_writers_keep_every_entry(tmp_path):
+    from multiprocessing import get_context
+
+    names = [f"box-{i}" for i in range(12)]
+    with get_context("fork").Pool(6) as pool:
+        pool.starmap(_write, [(n, str(tmp_path)) for n in names])
+    managed = (tmp_path / "barn.conf").read_text()
+    assert all(f"Host {n}\n" in managed for n in names)
+
+
+def _write(name, ssh_dir):
+    ssh.write_host(name, ssh.host_entry(name, "i-1", "u", "k", "p", "r"), ssh_dir)
