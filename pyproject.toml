@@ -1,6 +1,6 @@
 [project]
 name = "barn"
-version = "0.3.0"
+version = "0.4.0"
 description = "Personal EC2 dev boxes for long-running agent runs"
 readme = "README.md"
 authors = [

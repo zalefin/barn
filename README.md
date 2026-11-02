@@ -27,7 +27,7 @@ up a new account and adding people to it.
 ## Install
 
 ```bash
-uv tool install git+<this repo>          # or a release: git+<this repo>@v0.2.0; from a clone: uv tool install .
+uv tool install git+<this repo>          # or a release: git+<this repo>@v0.4.0; from a clone: uv tool install .
 uv tool upgrade barn                     # later; barn --version shows what you have
 ```
 

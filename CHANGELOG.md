@@ -5,7 +5,7 @@ minor release (0.x.0) may change the CLI or the files in `~/.config/barn/`;
 when it changes the files, barn migrates them automatically on first run
 (README: [Versions](README.md#versions)). Releases are git tags `vX.Y.Z`.
 
-## Unreleased
+## 0.4.0 (2026-11-02)
 
 - **Box commands find the box's account.** Without `--account`, `start`,
   `stop`, `connect`, `ssh`, `sync`, `doctor`, `destroy` and `create` look for
