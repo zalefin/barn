@@ -15,6 +15,7 @@ from rich.markup import escape
 
 from . import ui
 from .config import PLACEHOLDER, RENAMED, ConfigError, account_names, check_account_name, placeholders
+from .migrate import installed, migrate
 from .sync import short
 
 TEMPLATES = Path(__file__).parent / "templates"
@@ -50,6 +51,8 @@ def scaffold(home, account=None, aws_profile=None, account_file=None):
         if not account_file.is_file():
             raise ConfigError(f"no such account file: {account_file}")
     config = home / "config.toml"
+    if config.exists():
+        migrate(home, config)
     if config.exists() and not account and not account_file:
         try:
             account = tomllib.loads(config.read_text()).get("default_account")
@@ -59,6 +62,7 @@ def scaffold(home, account=None, aws_profile=None, account_file=None):
 
     done = []
     text = Template((TEMPLATES / "config.toml").read_text()).substitute(
+        version=installed(),
         account=account,
         aws_profile=aws_profile or PLACEHOLDER,
         user=os.environ.get("USER") or getpass.getuser(),

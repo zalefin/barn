@@ -134,7 +134,11 @@ def load_settings(home):
     path = Path(os.environ.get("BARN_SETTINGS") or home / "config.toml")
     if not path.exists():
         raise ConfigError(f"missing {path}; run `barn init`")
+    from .migrate import migrate  # imports this module
+
+    migrate(home, path)
     data = tomllib.loads(path.read_text())
+    data.pop("config_version", None)  # checked by migrate
     data.setdefault("user", os.environ.get("USER") or getpass.getuser())
     settings = _build(Settings, path, data)
     check_account_name(settings.default_account, f"{path}: default_account")

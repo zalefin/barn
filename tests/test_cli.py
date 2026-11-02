@@ -132,8 +132,8 @@ def test_load_settings_rejects_unknown_keys(tmp_path, monkeypatch):
     (tmp_path / "config.toml").write_text('default_account = "a"\ntypo = 1\n')
     with pytest.raises(ConfigError):
         load_settings(tmp_path)
-    # Before multiple accounts: the error says what replaced the old keys.
-    (tmp_path / "config.toml").write_text('account = "a"\naws_profile = "p"\n')
+    # Old keys in a file already at 0.2.0 (so not migrated): the error says what replaced them.
+    (tmp_path / "config.toml").write_text('config_version = "0.2.0"\naccount = "a"\naws_profile = "p"\n')
     with pytest.raises(ConfigError, match="`account` is now `default_account`.*aws_profiles"):
         load_settings(tmp_path)
     (tmp_path / "config.toml").write_text('default_account = "../x"\n')
@@ -214,6 +214,9 @@ def test_init_scaffolds_without_overwriting(tmp_path, monkeypatch):
     assert (tmp_path / "home" / ".barn" / "env").stat().st_mode & 0o777 == 0o600
     config = (tmp_path / "config.toml").read_text()
     assert 'user = "zach"' in config and 'default_account = "default"' in config
+    from barn.migrate import installed
+
+    assert f'config_version = "{installed()}"' in config
     assert f'[aws_profiles]\ndefault = "{PLACEHOLDER}"' in config
 
     required = [what for needed, _, what in todo(tmp_path) if needed]

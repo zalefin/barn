@@ -1,4 +1,5 @@
 # barn settings. Written by `barn init`; edit freely. Run `barn init` again for a checklist.
+config_version = "$version"       # barn's format of this file; a newer barn migrates it (keeps a .bak)
 default_account = "$account"      # accounts/<account>.toml, used when a command has no --account
 user = "$user"                    # barn:owner on boxes you create (box names are your choice, e.g. $user-dev)
 ssh_public_key = "$ssh_public_key"

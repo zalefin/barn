@@ -27,9 +27,12 @@ up a new account and adding people to it.
 ## Install
 
 ```bash
-uv tool install git+<this repo>   # or, from a clone: uv tool install .
-uv tool upgrade barn              # later
+uv tool install git+<this repo>          # or a release: git+<this repo>@v0.2.0; from a clone: uv tool install .
+uv tool upgrade barn                     # later; barn --version shows what you have
 ```
+
+An upgrade that changes the config format migrates `config.toml` on its next
+run ([Versions](#versions)).
 
 ## Setup
 
@@ -223,6 +226,27 @@ uv sync
 uv run barn ...    # run from the checkout
 scripts/check.sh   # pytest, terraform fmt/validate, shellcheck
 ```
+
+### Versions
+
+barn uses [semantic versioning](https://semver.org/); the version lives in
+`pyproject.toml`, the changes in [CHANGELOG.md](CHANGELOG.md), and each release
+is a git tag `vX.Y.Z`. Before 1.0.0, a breaking change (CLI, `config.toml`
+format, home layout) bumps the minor version and anything else the patch.
+
+`config.toml` records `config_version`, the barn version whose format it is
+in. On every run barn compares it with the installed version and runs, in
+order, each migration in `src/barn/migrate.py` registered above it; the old
+file is kept as `config.toml.<old version>.bak`. A config from a newer barn is
+an error, never downgraded. A file without `config_version` is from 0.1.0.
+
+To release a change to the config format or the home layout:
+
+1. Bump `version` in `pyproject.toml` and run `uv lock`.
+2. Add a `@migration("<new version>")` function to `migrate.py` that rewrites
+   old files (text edits keep comments; make it idempotent, since a file may
+   already be partly converted by hand), plus a test in `tests/test_migrate.py`.
+3. Update the template, docs and `CHANGELOG.md`; commit, tag `v<version>`, push the tag.
 
 Layout: `src/barn/` (CLI), `src/barn/terraform/{volume,instance}`
 (per-box roots, shipped in the package), `src/barn/bootstrap/`

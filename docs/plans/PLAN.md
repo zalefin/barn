@@ -1010,3 +1010,32 @@ One person can use barn in several AWS accounts at once.
   account file (named after the file, not `default_account`) and lists the
   missing `[aws_profiles]` entry as a to-do. Account names: letters, digits,
   `-` and `_` (a TOML bare key and a directory name), not `plugin-cache`.
+
+## 26. Versions and automatic migrations (2026-11-02)
+
+- Semantic versioning from here: `pyproject.toml` is the source, releases are
+  tags `vX.Y.Z`, changes go in `CHANGELOG.md`. Retroactively, `v0.1.0` is the
+  last commit before multiple accounts (87e106f); multiple accounts plus this
+  are 0.2.0. Before 1.0.0, breaking changes bump the minor version.
+- `config.toml` gets `config_version` (the barn version whose format it is
+  in; `barn init` writes the installed version). Missing means 0.1.0.
+- `migrate.py`: migrations registered by version. `load_settings` (every
+  command) and `barn init` run those above `config_version` and up to the
+  installed version, in order; then back up the old file as
+  `config.toml.<old>.bak`, stamp the installed version, and print what
+  changed. Nothing is written when no migration is pending, so a plain upgrade
+  never touches the file. A newer `config_version` than the installed barn is
+  an error (no downgrades).
+- Migrations edit the file as text (rename/remove top-level keys, add table
+  entries, set a key) and re-parse it after each step, so comments survive
+  and a bad result never reaches disk. They must be idempotent: a file may be
+  partly converted by hand (this machine's config was, before 0.2.0).
+- Migration 0.2.0: `account` → `default_account`, `aws_profile` →
+  `[aws_profiles] <account> = ...`, `state/<name>/` → `state/<account>/<name>/`
+  (only dirs with terraform files; `plugin-cache` stays). Verified on copies
+  of the platform repo's `handoff/config.toml` and an e2e home.
+- Account files are not versioned: barn does not write them and their format
+  has not changed. If it does, they get the same treatment.
+- No new dependency: tomlkit has no public key rename, and flat configs need
+  only line edits checked with `tomllib`.
+
