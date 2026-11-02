@@ -11,7 +11,7 @@ from pathlib import Path
 
 # The login user on every box: Ubuntu's default user (UID 1000, from cloud-init).
 BOX_USER = "ubuntu"
-# A box's full name: its SSH alias, hostname and `barn:name` tag (PLAN.md 23.2).
+# A box's full name: its SSH alias, hostname and `barn:name` tag (docs/plans/PLAN.md 23.2).
 BOX_NAME = re.compile(r"^[a-z][a-z0-9-]{0,38}[a-z0-9]$")
 # The S3 backend keeps workspaces under env/workspaces/, and the provider cache is
 # state/plugin-cache/ (tf.py); a box with either name would collide.

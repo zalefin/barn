@@ -130,7 +130,7 @@ def test_load_account_rejects_missing_and_stale_keys(tmp_path):
     (tmp_path / "accounts" / "a.toml").write_text(ACCOUNT + 'developer_policy_role_arn = "arn:r"\n')
     with pytest.raises(ConfigError, match="unknown keys"):
         load_account(tmp_path, "a")
-    # Before managers and guests (PLAN.md 23.3): the error names the old key.
+    # Before managers and guests (docs/plans/PLAN.md 23.3): the error names the old key.
     (tmp_path / "accounts" / "a.toml").write_text(ACCOUNT + 'developer_role_arn = "arn:r"\n')
     with pytest.raises(ConfigError, match="developer_role_arn"):
         load_account(tmp_path, "a")

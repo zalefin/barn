@@ -1,4 +1,4 @@
-"""barn command line (PLAN.md section 11)."""
+"""barn command line (docs/plans/PLAN.md section 11)."""
 
 import os
 import re

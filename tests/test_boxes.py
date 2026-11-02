@@ -1,4 +1,4 @@
-"""Box names, the owner guard, connect, list and guest keys (PLAN.md 23), against a fake EC2."""
+"""Box names, the owner guard, connect, list and guest keys (docs/plans/PLAN.md 23), against a fake EC2."""
 
 import os
 import subprocess

@@ -210,4 +210,4 @@ scripts/check.sh   # pytest, terraform fmt/validate, shellcheck
 Layout: `src/barn/` (CLI), `src/barn/terraform/{volume,instance}`
 (per-box roots, shipped in the package), `src/barn/bootstrap/`
 (first-boot script, idle check, `authorized_keys` blocks), `docs/` (account
-prerequisites and the manager and guest policies), `src/barn/templates/` (what `barn init` writes). The design is in `PLAN.md`.
+prerequisites and the manager and guest policies), `src/barn/templates/` (what `barn init` writes). The design is in [`docs/plans/PLAN.md`](docs/plans/PLAN.md).

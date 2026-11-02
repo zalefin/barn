@@ -12,9 +12,9 @@
 - **2026-11-02:** managers and guests, and full box names instead of
   `<user>-<env>` (section 23), implemented in barn and the demo platform and
   folded into sections 2–12. Sandbox verification status: section 23.10.
-- **Next (not done):** move the user's setup to their laptop with the `zach`
-  admin user as source profile. The instructions are in
-  `MIGRATION-laptop.md`, which is kept out of git; the user brings it.
+- **2026-11-02:** the user's setup moved to their laptop, with the `zach`
+  admin user as source profile (section 24). This file moved from the repo
+  root to `docs/plans/PLAN.md`.
 - **Source of truth:** this file. `docs/design-log.md` is the verbatim interview
   history with question numbers (Q1–Q47); some of its entries are superseded.
   Use it only to understand *why*. Where they disagree, this file wins.
@@ -94,14 +94,14 @@ Two Terraform roots, shipped inside the Python package and copied into
 - `instance` — per box. Destroying it leaves the volume (and the home
   directory) intact.
 
-Account setup is out of scope. A demo implementation of the prerequisites
-(formerly `terraform/platform`) lives outside this repo in
-`~/source/barn-platform-minimal`.
+Account setup is out of scope. Each account's prerequisites come from its
+**platform**, infrastructure code outside this repo (one repo per account);
+barn's docs never name one. Agents ask the user where an account's platform is
+(`docs/onboarding.md`).
 
 ## 4. Repo layout
 
 ```
-PLAN.md                     this file
 README.md                   developer quickstart
 pyproject.toml, uv.lock     the CLI (console script: barn; `uv tool install`)
 src/barn/         CLI package
@@ -115,9 +115,11 @@ src/barn/         CLI package
 tests/                      pytest
 docs/
   account-prerequisites.md  what an account must provide; the account file
+  onboarding.md             order of work: a new account, adding/removing people
   manager-policy.json       the manager IAM policy, with placeholders
   guest-policy.json         the guest IAM policy, with placeholders
   design-log.md             interview history (historical)
+  plans/PLAN.md             this file
 src/barn/templates/         config.toml, account.toml, env written by `barn init`
 ```
 
@@ -953,7 +955,28 @@ Sandbox (123456789012), all as specified:
   the only denials were the deliberate negative tests. Both test boxes
   destroyed with `--volume`; `zach-a2n` kept (running).
 
-## 24. Laptop migration (planned 2026-11-02)
+## 24. Laptop migration (done 2026-11-02)
 
-Instructions for the agent on the user's laptop: `MIGRATION-laptop.md`. It is
-kept out of git (excluded locally); the user brings it to the laptop.
+The user's barn setup moved from the devbox to their laptop (Arch Linux,
+`obsidian`; not WSL as planned). The one-off instructions
+(`MIGRATION-laptop.md`, never committed) were deleted afterwards.
+
+- barn reinstalled from `main`. AWS profiles `barn-zach-manager` and
+  `barn-zach-guest` (source profile `zach`); the stale `barn-dev`,
+  `barn-dev-user` profiles removed. Backups: `~/.aws/*.pre-23.*`,
+  `~/.config/barn.pre-23`.
+- `config.toml`: account `sandbox`, `aws_profile = "barn-zach-manager"`.
+  `accounts/sandbox.toml` with `manager_role_arn`; the pre-23 account files
+  and `state/zach-a2n` deleted.
+- **Deviation:** the laptop's SSH key is its own (`SHA256:G59G…`), not the
+  devbox key that owns `zach-a2n`. At the user's request the laptop key was
+  appended by hand to `zach-a2n`'s `authorized_keys`, outside barn's blocks
+  (so `create` and `sync` keep it), via the devbox. `barn create zach-a2n`
+  from the laptop would therefore replace the instance (new owner key in user
+  data); the volume is kept.
+- Verified from the laptop: `barn list`, `connect`, `ssh zach-a2n` with the
+  saved host key, `doctor` 51/51 as `barn-manager`. `barn sync` not run (the
+  laptop's `home/` has no tokens; the box's work).
+- Same day: test user `foo` removed (devbox, `barn-platform-minimal`: out of
+  `guest_principal_arns` and `test-users`, platform applied first). Its local
+  profiles and e2e home on the devbox remain.

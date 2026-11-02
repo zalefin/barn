@@ -1,4 +1,4 @@
-"""`doctor <name>` (PLAN.md section 12). Each check prints pass, warn, or fail."""
+"""`doctor <name>` (docs/plans/PLAN.md section 12). Each check prints pass, warn, or fail."""
 
 import subprocess
 
