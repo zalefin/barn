@@ -8,14 +8,17 @@ passwordless_sudo = true
 idle_hours = 4
 volume_gb = 100
 # shared_home = "~/src/team-dotfiles/home"   # optional team defaults, synced before home/
-# Public keys that may also SSH into boxes you create (pushed by create and sync;
-# remove one and run `barn sync <name>` to revoke it):
-# guest_keys = [
-#   "ssh-ed25519 AAAA... alice",
-# ]
+
+# Tables last: every key below a [table] line belongs to that table.
 
 # One AWS CLI profile per account (accounts/<account>.toml), assuming
-# barn-manager or barn-guest there. Add a line for each account you use; keep
-# this table last (every key below [aws_profiles] belongs to it).
+# barn-manager or barn-guest there. Add a line for each account you use.
 [aws_profiles]
 $account = "$aws_profile"
+
+# Per account, public keys that may also SSH into boxes you create there (pushed
+# by create and sync; remove one and run `barn sync <name>` to revoke it):
+[guest_keys]
+# $account = [
+#   "ssh-ed25519 AAAA... alice",
+# ]

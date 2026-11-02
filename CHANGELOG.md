@@ -5,6 +5,15 @@ minor release (0.x.0) may change the CLI or the files in `~/.config/barn/`;
 when it changes the files, barn migrates them automatically on first run
 (README: [Versions](README.md#versions)). Releases are git tags `vX.Y.Z`.
 
+## 0.3.0 (2026-11-02)
+
+- **Guest keys per account.** `guest_keys` is now a table with one list per
+  account (`[guest_keys]` then `sandbox = [...]`). `create` and `sync` push only
+  the box's account's list; an account without one gets no guests. Migration
+  0.3.0 moves an existing list, comments included, under `default_account`
+  (the only account it was pushed to before). `barn init` flags a list for an
+  account with no account file.
+
 ## 0.2.0 (2026-11-02)
 
 - **Multiple AWS accounts.** `config.toml`: `account` is now `default_account`,

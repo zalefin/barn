@@ -77,7 +77,7 @@ class FakeCtx(cli.Context):
         self.settings = SimpleNamespace(
             user=user,
             private_key_path=f"/keys/{user}",
-            guest_keys=list(guest_keys),
+            guest_keys={account: list(guest_keys)} if guest_keys else {},
             shared_home_path=None,
             default_size="m7i.xlarge",
         )
@@ -264,14 +264,32 @@ def test_list_spans_accounts_and_names_each_rows_account(tmp_path, monkeypatch, 
 def test_guest_keys_setting(tmp_path, monkeypatch):
     monkeypatch.delenv("BARN_SETTINGS", raising=False)
     cfg = tmp_path / "config.toml"
-    cfg.write_text(f'default_account = "a"\nguest_keys = ["{KEY_A}", " {KEY_F} "]\n')
-    assert load_settings(tmp_path).guest_keys == [KEY_A, KEY_F]
-    cfg.write_text('default_account = "a"\nguest_keys = ["not a key"]\n')
-    with pytest.raises(ConfigError, match="guest_keys"):
+    head = 'config_version = "0.3.0"\ndefault_account = "a"\n'
+    cfg.write_text(head + f'[guest_keys]\na = ["{KEY_A}", " {KEY_F} "]\nb = []\n')
+    assert load_settings(tmp_path).guest_keys == {"a": [KEY_A, KEY_F], "b": []}
+    cfg.write_text(head + '[guest_keys]\na = ["not a key"]\n')
+    with pytest.raises(ConfigError, match="guest_keys.a entries"):
         load_settings(tmp_path)
-    cfg.write_text(f'default_account = "a"\nguest_keys = "{KEY_A}"\n')
-    with pytest.raises(ConfigError, match="guest_keys must be a list"):
+    # A flat list in a 0.3.0 file (not migrated): the error shows the table form.
+    cfg.write_text(head + f'guest_keys = ["{KEY_A}"]\n')
+    with pytest.raises(ConfigError, match=r"one list per account.*\[guest_keys\]"):
         load_settings(tmp_path)
+
+
+def test_guest_keys_are_scoped_to_the_boxs_account(tmp_path, monkeypatch):
+    monkeypatch.setattr(ssh.Path, "home", lambda: tmp_path)
+    pushed = []
+    monkeypatch.setattr(
+        ssh, "run", lambda alias, script, timeout=120: pushed.append(script) or subprocess.CompletedProcess([], 0, "", "")
+    )
+    ec2 = FakeEc2([instance("zach-dev", "zach", "i-1")])
+    sandbox = FakeCtx(ec2, guest_keys=[KEY_A])
+    work = FakeCtx(ec2, account="work")
+    work.settings.guest_keys = sandbox.settings.guest_keys  # same config.toml
+    assert (sandbox.guest_keys, work.guest_keys) == ([KEY_A], [])
+    cli.push_guest_keys(sandbox, "zach-dev")
+    cli.push_guest_keys(work, "zach-dev")
+    assert KEY_A in pushed[0] and KEY_A not in pushed[1]  # the work box gets an empty guests block
 
 
 def test_authorized_keys_script_runs(tmp_path):

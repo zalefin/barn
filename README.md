@@ -99,7 +99,7 @@ reattach later with `herdr`. Don't run herdr inside tmux.
 | `destroy <name>` | manager | Deletes the box but **keeps the home volume**. `create` brings it back with your files and the same SSH host key. Refuses someone else's box unless `--force`. |
 | `destroy <name> --volume` | manager | Also deletes the home volume, after you type the name to confirm. |
 | `stop` / `start <name>` | manager | Stops or starts any box. A stopped box costs only its volumes. |
-| `sync <name>` | manager | Pushes your `guest_keys` and copies your home directory overlay to your box. Local files win, nothing is deleted, and files are skipped while agents are running. Refuses someone else's box. |
+| `sync <name>` | manager | Pushes the account's `guest_keys` and copies your home directory overlay to your box. Local files win, nothing is deleted, and files are skipped while agents are running. Refuses someone else's box. |
 | `list [--account A]` | anyone | Every box in every account (or just one): account, owner (yours marked), state, type, uptime, rough cost. An account whose credentials fail is skipped with a warning. |
 | `connect <name>` | anyone | Adds the box to `~/.ssh/barn.conf` with your key and profile, so plain `ssh`, `scp`, `rsync` and `herdr --remote` work. Says if it is stopped. |
 | `ssh <name> [args]` | anyone | `connect`, then `ssh <name>`. |
@@ -111,16 +111,19 @@ Each has its own volume, instance and state.
 
 ## Guests
 
-To let someone onto a box you create, add their public key to `guest_keys` in
-your `config.toml`:
+To let someone onto the boxes you create in an account, add their public key
+to that account's list under `[guest_keys]` in your `config.toml`:
 
 ```toml
-guest_keys = [
+[guest_keys]
+sandbox = [
   "ssh-ed25519 AAAA... alice",
 ]
+work = []
 ```
 
-`create` and `sync` write these into a `# >>> barn guests >>>` block of the
+Keys are scoped per account: a box gets only its own account's list, and an
+account with no list gets no guests. `create` and `sync` write these into a `# >>> barn guests >>>` block of the
 box's `~/.ssh/authorized_keys`. Remove a key and run `barn sync <name>` to
 revoke it (this works even while agents run). That removes only the key barn
 wrote: a guest has sudo, so one who added their key elsewhere keeps it. Keys you add to
@@ -152,7 +155,7 @@ Terraform's output goes to a log file instead of the terminal (`create -v` and
 
 ## Sync
 
-`sync <name>` first pushes your `guest_keys` ([Guests](#guests)), then copies
+`sync <name>` first pushes the box's account's `guest_keys` ([Guests](#guests)), then copies
 these onto the box's home directory, in order:
 
 1. `shared_home` from `config.toml`, if set: team defaults, for example a

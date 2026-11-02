@@ -1039,3 +1039,19 @@ One person can use barn in several AWS accounts at once.
 - No new dependency: tomlkit has no public key rename, and flat configs need
   only line edits checked with `tomllib`.
 
+## 27. Guest keys per account (0.3.0, 2026-11-02)
+
+- `guest_keys` (a list) becomes a `[guest_keys]` table, `<account> = [keys]`,
+  like `[aws_profiles]`. `create` and `sync` push the box's account's list
+  (`Context.guest_keys`); an account without one gets an empty guests block,
+  so moving to 0.3.0 and syncing a box in another account revokes guests
+  there that the old global list had added.
+- Migration 0.3.0 moves the old list, verbatim with its comments, under
+  `default_account`. An empty list is dropped. The migrate text helpers now
+  handle values spanning several lines (`pop_key` finds the end by parsing).
+- A flat list in a file already at 0.3.0 is an error that shows the table form.
+  `barn init` lists a `[guest_keys]` entry without an account file as an
+  optional to-do (likely a typo).
+- "For now": a per-account table in the user's `config.toml`. Per-box lists or
+  keys in the shared account file were not wanted yet.
+

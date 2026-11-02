@@ -157,6 +157,11 @@ def todo(home):
         elif profile != PLACEHOLDER and profile not in known:
             items.append((True, Path("~/.aws/config"), f"add profile {profile!r} (or change aws_profiles.{name})"))
 
+    guests = settings.get("guest_keys", {})
+    for name in sorted(guests if isinstance(guests, dict) else {}):
+        if not (home / "accounts" / f"{name}.toml").exists():
+            items.append((False, config, f"[guest_keys] {name}: no accounts/{name}.toml (a typo?)"))
+
     env = home / "home" / ".barn" / "env"
     if not any(line.strip().startswith("export ") for line in env.read_text().splitlines()):
         items.append((False, env, "add CLAUDE_CODE_OAUTH_TOKEN and KIRO_API_KEY, then `barn sync <name>`"))

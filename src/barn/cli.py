@@ -57,6 +57,11 @@ class Context:
         self.verbose = verbose
         self._roots_installed = False
 
+    @property
+    def guest_keys(self):
+        """The public keys allowed onto boxes you create in this account."""
+        return self.settings.guest_keys.get(self.account.name, [])
+
     def tf(self, name, root):
         if not self._roots_installed:
             install_roots(self.home)
@@ -251,9 +256,9 @@ def create(ctx, name, size=None):
 
 
 def push_guest_keys(ctx, name):
-    """Make the box's guests block in authorized_keys exactly guest_keys (an empty
-    list revokes every guest). Keys outside the barn blocks are kept."""
-    keys = ctx.settings.guest_keys
+    """Make the box's guests block in authorized_keys exactly the account's
+    guest_keys (none listed revokes every guest). Keys outside the barn blocks are kept."""
+    keys = ctx.guest_keys
     with ui.step("Guest keys") as s:
         r = ssh.run(name, ssh.authorized_keys_script("guests", keys))
         if r.returncode != 0:
@@ -577,7 +582,7 @@ def stop_cmd(name: Name, account: Account = None):
 
 @app.command("sync", rich_help_panel=MANAGE)
 def sync_cmd(name: Name, account: Account = None):
-    """Push your guest_keys and home overlay onto your box. Never deletes files; skips them while agents run."""
+    """Push the account's guest_keys and your home overlay onto your box. Never deletes files; skips them while agents run."""
     from .sync import sync
 
     raise typer.Exit(sync(Context(account=account), name))

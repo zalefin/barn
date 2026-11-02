@@ -53,7 +53,7 @@ def migration(version):
     return register
 
 
-# --- editing config.toml as text (top-level keys with one-line values) ---
+# --- editing config.toml as text (top-level keys; values may span lines) ---
 
 TABLE_HEADER = re.compile(r"^\s*\[")
 
@@ -72,6 +72,33 @@ def _find(lines, key):
     return next((i for i in range(end) if _key_re(key).match(lines[i])), None)
 
 
+def _span(lines, key):
+    """(start, end) of a top-level key's lines: its value may span several
+    (a multi-line array), and ends at the first line where it parses."""
+    i = _find(lines, key)
+    if i is None:
+        return None
+    for j in range(i + 1, _top_level(lines) + 1):
+        try:
+            if key in tomllib.loads("".join(lines[i:j])):
+                return i, j
+        except tomllib.TOMLDecodeError:
+            continue
+    raise ConfigError(f"cannot find the end of {key}'s value")
+
+
+def pop_key(text, key):
+    """Remove a top-level key. Returns (text, its source lines or None), so the
+    value can be moved with its comments."""
+    lines = text.splitlines(keepends=True)
+    span = _span(lines, key)
+    if span is None:
+        return text, None
+    source = "".join(lines[span[0] : span[1]])
+    del lines[span[0] : span[1]]
+    return "".join(lines), source
+
+
 def rename_key(text, old, new):
     """Rename a top-level key, keeping its value and trailing comment."""
     lines = text.splitlines(keepends=True)
@@ -82,11 +109,7 @@ def rename_key(text, old, new):
 
 
 def remove_key(text, key):
-    lines = text.splitlines(keepends=True)
-    i = _find(lines, key)
-    if i is not None:
-        del lines[i]
-    return "".join(lines)
+    return pop_key(text, key)[0]
 
 
 def set_key(text, key, value, comment=""):
@@ -108,9 +131,13 @@ def add_table_entries(text, table, entries):
     the table already has are left alone."""
     have = tomllib.loads(text).get(table, {})
     new = {k: v for k, v in entries.items() if k not in have}
-    if not new:
+    return add_table_source(text, table, "".join(f"{k} = {json.dumps(v)}\n" for k, v in new.items()))
+
+
+def add_table_source(text, table, body):
+    """Add TOML lines (entries) to [table], creating it at the end of the file."""
+    if not body:
         return text
-    body = "".join(f"{k} = {json.dumps(v)}\n" for k, v in new.items())
     lines = text.splitlines(keepends=True)
     header = next((i for i, raw in enumerate(lines) if raw.strip() == f"[{table}]"), None)
     if header is None:
@@ -156,6 +183,24 @@ def multiple_accounts(home, text):
             os.replace(box, target)
             notes.append(f"state/{box.name}/ → state/{account}/{box.name}/")
     return text, notes
+
+
+@migration("0.3.0")
+def guest_keys_per_account(home, text):
+    """guest_keys became a table with one list per account; the old list belongs
+    to default_account, the only account its keys were pushed to before."""
+    data = tomllib.loads(text)
+    if not isinstance(data.get("guest_keys"), list):
+        return text, []
+    account = data.get("default_account")
+    if not isinstance(account, str):
+        raise ConfigError("cannot move guest_keys into [guest_keys]: no default_account")
+    text, source = pop_key(text, "guest_keys")
+    keys = data["guest_keys"]
+    if keys:
+        entry = re.sub(r"^(\s*)guest_keys(\s*=)", rf"\g<1>{account}\g<2>", source, count=1)
+        text = add_table_source(text, "guest_keys", entry)
+    return text, [f"guest_keys → [guest_keys] {account} ({len(keys)} key{'s' * (len(keys) != 1)})"]
 
 
 # --- running them ---

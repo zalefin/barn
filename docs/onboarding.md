@@ -96,12 +96,12 @@ Send them the account file and, for IAM users, the role ARNs (or ready-made
    `<account> = "barn-<user>-manager"` under its `[aws_profiles]`. Commands
    then take `--account <account>` (or change `default_account`).
 3. **Guests** also need a box owner to add their public key to the owner's
-   `guest_keys` and run `barn sync <name>`. Then `barn connect <name>` and
+   `[guest_keys]` list for this account and run `barn sync <name>`. Then `barn connect <name>` and
    plain `ssh <name>` work ([Guests](../README.md#guests)).
 
 ## Removing a person
 
-1. Box owners remove the person's key from `guest_keys` and run
+1. Box owners remove the person's key from the account's `[guest_keys]` list and run
    `barn sync <name>` on each box. This revokes only the key barn wrote; a key
    added by hand outside barn's blocks in `~/.ssh/authorized_keys` stays (see
    [What the policies do not protect](account-prerequisites.md#what-the-policies-do-not-protect)).

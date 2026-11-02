@@ -124,7 +124,7 @@ def test_load_settings_and_account(tmp_path, monkeypatch):
     a = load_account(tmp_path, s.default_account)
     assert a.name == "personal" and a.extra_tags == {"cost-center": "42"}
     assert a.ami_ssm_parameter == UBUNTU_AMI and a.manager_role_arn == ""
-    assert s.guest_keys == []
+    assert s.guest_keys == {}
 
 
 def test_load_settings_rejects_unknown_keys(tmp_path, monkeypatch):

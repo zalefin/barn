@@ -27,8 +27,8 @@ barn has two kinds of users, each an IAM role that people assume:
   `rsync` and `herdr --remote` afterwards. A guest cannot start a stopped box.
 
 A box belongs to whoever created it (`barn:owner`). Which people may SSH in is
-decided by keys, not IAM: the owner's key, plus the `guest_keys` the owner lists
-in their `config.toml` (pushed into the box's `authorized_keys` by `create` and
+decided by keys, not IAM: the owner's key, plus the keys the owner lists for
+this account under `[guest_keys]` in their `config.toml` (pushed into the box's `authorized_keys` by `create` and
 `sync`). Every guest needs both: the guest role (or the manager role) for the
 tunnel, and a key the owner listed. Everyone logs in as `ubuntu`.
 

@@ -14,7 +14,9 @@ aws_profile = "barn-zach-manager" # assumes barn-manager
 user = "zach"                     # barn:owner of boxes you create
 guest_keys = [
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAlice alice",
+  # "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOld old",
 ]
+idle_hours = 4
 """
 
 
@@ -61,9 +63,29 @@ def test_0_2_0_migrates_an_old_config_and_state(home):
     assert (home / "config.toml").read_text() == text
 
 
+def test_0_3_0_scopes_guest_keys_to_the_default_account(home):
+    assert m.migrate(home, home / "config.toml", now="0.3.0") == ["0.2.0", "0.3.0"]
+    text = (home / "config.toml").read_text()
+    data = tomllib.loads(text)
+    assert data["guest_keys"] == {"sandbox": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAlice alice"]}
+    assert data["idle_hours"] == 4 and data["config_version"] == "0.3.0"
+    # The array moves whole, comments included, into the table at the end.
+    assert text.endswith(
+        '[guest_keys]\nsandbox = [\n  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAlice alice",\n'
+        '  # "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOld old",\n]\n'
+    )
+    assert m.migrate(home, home / "config.toml", now="0.3.0") == []
+
+    # From 0.2.0 with no guests: the empty list just goes.
+    (home / "config.toml").write_text('config_version = "0.2.0"\ndefault_account = "a"\nguest_keys = []\n')
+    m.migrate(home, home / "config.toml", now="0.3.0")
+    assert "guest_keys" not in tomllib.loads((home / "config.toml").read_text())
+
+
 def test_load_settings_migrates_automatically(home, capsys):
     s = load_settings(home)
     assert s.default_account == "sandbox" and s.aws_profile("sandbox") == "barn-zach-manager"
+    assert list(s.guest_keys) == ["sandbox"]
     assert "migrated config.toml from barn 0.1.0" in capsys.readouterr().err
 
 
@@ -115,3 +137,6 @@ def test_text_helpers():
     assert tomllib.loads(m.add_table_entries(text, "t", {"x": "y", "a": "no"}))["t"] == {"a": "table", "x": "y"}
     assert tomllib.loads(m.add_table_entries(text, "u", {"k": "v"}))["u"] == {"k": "v"}
     assert m.set_key(text, "v", "1.0.0").startswith('# c\nv = "1.0.0"\na = "1"')
+    multi = 'k = [\n  "x",  # one\n]\nb = 2\n'
+    assert m.pop_key(multi, "k") == ("b = 2\n", 'k = [\n  "x",  # one\n]\n')
+    assert m.pop_key(multi, "missing") == (multi, None)

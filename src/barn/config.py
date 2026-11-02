@@ -63,7 +63,8 @@ class Settings:
     idle_hours: float = 4
     volume_gb: int = 100
     shared_home: str = ""
-    guest_keys: list = field(default_factory=list)
+    # {account name: [public keys]}: who else may SSH into boxes you create there.
+    guest_keys: dict = field(default_factory=dict)
 
     @property
     def public_key_path(self):
@@ -146,13 +147,17 @@ def load_settings(home):
         isinstance(v, str) for v in settings.aws_profiles.values()
     ):
         raise ConfigError(f'{path}: [aws_profiles] must map account names to profile names (sandbox = "my-profile")')
-    keys = settings.guest_keys
-    if not isinstance(keys, list):
-        raise ConfigError(f"{path}: guest_keys must be a list of public keys")
-    bad = [k for k in keys if not isinstance(k, str) or not PUBLIC_KEY.match(k.strip())]
-    if bad:
-        raise ConfigError(f"{path}: guest_keys entries are not one-line SSH public keys: {bad}")
-    settings.guest_keys = [k.strip() for k in keys]
+    tables = settings.guest_keys
+    if not isinstance(tables, dict) or not all(isinstance(v, list) for v in tables.values()):
+        raise ConfigError(
+            f"{path}: guest_keys must be a table of account = [public keys], one list per account "
+            '(since 0.3.0): [guest_keys] then sandbox = ["ssh-ed25519 AAAA... alice"]'
+        )
+    for account, keys in tables.items():
+        bad = [k for k in keys if not isinstance(k, str) or not PUBLIC_KEY.match(k.strip())]
+        if bad:
+            raise ConfigError(f"{path}: guest_keys.{account} entries are not one-line SSH public keys: {bad}")
+    settings.guest_keys = {account: [k.strip() for k in keys] for account, keys in tables.items()}
     return settings
 
 

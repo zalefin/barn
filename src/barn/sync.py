@@ -1,4 +1,4 @@
-"""`sync <name>`: push guest_keys into the box's authorized_keys, then the
+"""`sync <name>`: push the account's guest_keys into the box's authorized_keys, then the
 optional shared_home and <barn home>/home/ onto the box (docs/plans/PLAN.md 9.2, 23.4).
 
 Local files win; remote files are never deleted; paths not in those
