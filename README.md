@@ -13,7 +13,9 @@ The CLI manages only home volumes and EC2 instances. It expects the AWS
 account to already have a network, security group, instance profile, state
 bucket and the manager and guest roles:
 **[docs/account-prerequisites.md](docs/account-prerequisites.md)** lists exactly
-what is needed and how to point the CLI at it.
+what is needed and how to point the CLI at it;
+**[docs/onboarding.md](docs/onboarding.md)** is the order of work for setting
+up a new account and adding people to it.
 
 ## Prerequisites (laptop / WSL)
 

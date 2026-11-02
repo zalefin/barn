@@ -10,9 +10,10 @@ creates only:
 plus two Terraform state objects in your bucket. This page lists everything
 that must exist first, and the account file that tells the CLI where it is.
 
-A minimal Terraform implementation of all of it (VPC, security group, roles,
-bucket, both policies) is kept as a demo outside this repo, in
-`~/source/barn-platform-minimal`.
+All of it is created by the account's **platform**, infrastructure code kept
+outside barn and applied by the account's administrators.
+[onboarding.md](onboarding.md) is the order of work for a new account and for
+adding or removing people.
 
 ## Managers and guests
 
