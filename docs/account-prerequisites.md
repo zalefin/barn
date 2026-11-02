@@ -33,7 +33,8 @@ in their `config.toml` (pushed into the box's `authorized_keys` by `create` and
 tunnel, and a key the owner listed. Everyone logs in as `ubuntu`.
 
 One person may hold both roles, with one AWS CLI profile per role; barn uses
-whichever `aws_profile` their `config.toml` names. People are IAM users with
+whichever profile their `config.toml` names for the account under
+`[aws_profiles]`. People are IAM users with
 their own access keys, or SSO users, whose profiles assume the role
 (`role_arn` + `source_profile`, or an SSO permission set).
 
@@ -198,9 +199,11 @@ files. If a provider upgrade adds a read, `create` fails with
 ## The account file
 
 Everyone (managers and guests) saves one file per account at
-`~/.config/barn/accounts/<name>.toml` and selects it with
-`account = "<name>"` in `config.toml`. The file contains no secrets, so one
-copy can be shared with everyone using the account.
+`~/.config/barn/accounts/<name>.toml`, names a profile for it under
+`[aws_profiles]` in `config.toml` (`<name> = "<profile>"`), and picks it with
+`--account <name>` or `default_account = "<name>"`. The file contains no
+secrets, so one copy can be shared with everyone using the account. One
+person can use several accounts side by side.
 
 ```toml
 region = "us-east-1"

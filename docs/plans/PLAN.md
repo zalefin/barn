@@ -372,10 +372,10 @@ function with unit tests; the shell script only gathers inputs.
 
 Python package using `uv`; wraps terraform via subprocess and uses boto3 for
 waits, lookups and console output. boto3, terraform and the SSH ProxyCommand
-all use the caller's `aws_profile` unchanged. Runs from any directory.
+all use the caller's profile for the account (`[aws_profiles]`) unchanged. Runs from any directory.
 Built on Typer; output (spinners, colors, tables) goes through `barn.ui` on
 rich. Terraform apply/destroy output is written to
-`<home>/state/<name>/<root>/<command>.log` unless `-v` is given. AWS
+`<home>/state/<account>/<name>/<root>/<command>.log` unless `-v` is given. AWS
 errors (for example a guest calling `start`) print as one line.
 
 | Command | Who | Behavior |
@@ -384,7 +384,7 @@ errors (for example a guest calling `start`) print as one line.
 | `destroy <name> [--volume] [--force]` | manager | owner guard (unless `--force`); destroy instance root; with `--volume`, also the volume root after typed confirmation. |
 | `stop <name>` / `start <name>` | manager | boto3 stop/start on any box; wait for state. |
 | `sync <name>` | manager | section 9.2. |
-| `list` | anyone | every barn box in the account (`tag:barn` only): owner (yours marked), state, type, uptime, rough hourly cost. |
+| `list [--account A]` | anyone | every barn box in every account file's account, or just A (`tag:barn` only): account, owner (yours marked), state, type, uptime, rough hourly cost. |
 | `connect <name>` | anyone | find the box by `barn:name`, write its SSH entry with the caller's key and profile; say if it is stopped. |
 | `ssh <name>` | anyone | `connect`, then exec `ssh <name>` (exits 1 if the box is not running). |
 | `doctor <name>` | anyone | section 12. |
@@ -410,8 +410,7 @@ kms_key_id = ""                   # optional
 ### 11.2 Local settings (`~/.config/barn/config.toml`)
 
 ```toml
-account = "personal"              # selects accounts/<account>.toml
-aws_profile = "..."               # the developer's own source profile
+default_account = "personal"      # accounts/<account>.toml when a command has no --account
 user = "zach"                     # barn:owner of boxes you create; default $USER
 ssh_public_key = "~/.ssh/id_ed25519.pub"
 default_size = "m7i.xlarge"
@@ -420,6 +419,9 @@ idle_hours = 4
 volume_gb = 100
 shared_home = ""                  # optional team defaults dir, synced first
 guest_keys = []                   # optional: public keys authorized on boxes you create
+
+[aws_profiles]                    # one AWS CLI profile per account file
+personal = "..."
 ```
 
 ## 12. `doctor <name>`
@@ -980,3 +982,31 @@ The user's barn setup moved from the devbox to their laptop (Arch Linux,
 - Same day: test user `foo` removed (devbox, `barn-platform-minimal`: out of
   `guest_principal_arns` and `test-users`, platform applied first). Its local
   profiles and e2e home on the devbox remain.
+
+## 25. Multiple accounts (2026-11-02)
+
+One person can use barn in several AWS accounts at once.
+
+- `config.toml`: `account` is replaced by **`default_account`**, and
+  `aws_profile` by an **`[aws_profiles]`** table, `<account> = "<profile>"`,
+  since each AWS account needs its own profile. The old keys are an error
+  that names the replacement.
+- Every account with a file in `accounts/` is usable. Box commands (`create`,
+  `destroy`, `start`, `stop`, `sync`, `connect`, `ssh`, `doctor`) take
+  `--account <name>` (long form only: `ssh` passes other options through, and
+  `-a`/`-A` are ssh's); without it they use `default_account`. `hold` goes
+  over the SSH alias and needs no account.
+- `list` reads every account (in parallel) and adds an ACCOUNT column, sorted
+  by account then name; `--account` limits it to one. An account that fails
+  (no profile, expired SSO token, AWS error) is warned about and skipped; it is
+  an error only when it was asked for by name or every account failed.
+- Terraform data dirs move to `state/<account>/<name>/<root>` (box names are
+  unique per account only). State in S3 is unchanged; the old
+  `state/<name>/` dirs are unused and can be deleted.
+- `~/.ssh/barn.conf` still has one entry per box name, so the same name in two
+  accounts shares an SSH alias: plain `ssh` reaches whichever was connected
+  last. Not prevented; documented.
+- `barn init --account-file X.toml` with an existing `config.toml` adds the
+  account file (named after the file, not `default_account`) and lists the
+  missing `[aws_profiles]` entry as a to-do. Account names: letters, digits,
+  `-` and `_` (a TOML bare key and a directory name), not `plugin-cache`.

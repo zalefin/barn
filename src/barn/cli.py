@@ -4,19 +4,20 @@ import os
 import re
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from importlib.metadata import version
 from typing import Annotated
 
 import typer
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from rich import box
 from rich.prompt import Prompt
 from rich.table import Table
 
 from . import ssh, ui
 from .aws import Aws
-from .config import BOX_USER, ConfigError, app_home, check_name, load_account, load_settings
+from .config import BOX_USER, ConfigError, account_names, app_home, check_name, load_account, load_settings
 from .tf import Terraform, TerraformError, install_roots
 
 MARKER = "/var/lib/barn/bootstrap-done"
@@ -46,11 +47,13 @@ def tag_map(resource):
 
 
 class Context:
-    def __init__(self, verbose=False):
+    """One account, as the person in config.toml: account None is default_account."""
+
+    def __init__(self, verbose=False, account=None, settings=None):
         self.home = app_home()
-        self.settings = load_settings(self.home)
-        self.account = load_account(self.home, self.settings.account)
-        self.aws = Aws(self.account, self.settings)
+        self.settings = settings or load_settings(self.home)
+        self.account = load_account(self.home, account or self.settings.default_account)
+        self.aws = Aws(self.account, self.settings.aws_profile(self.account.name))
         self.verbose = verbose
         self._roots_installed = False
 
@@ -87,7 +90,10 @@ class Context:
     def require_instance(self, name):
         inst = self.find_instance(name)
         if not inst:
-            raise ConfigError(f"no box named {name!r}; `barn list` shows every box in the account")
+            raise ConfigError(
+                f"no box named {name!r} in account {self.account.name}; `barn list` shows every box "
+                "in every account, and --account picks another"
+            )
         return inst
 
     def owners(self, name):
@@ -163,7 +169,7 @@ def instance_vars(ctx, name, vol, instance_type):
 def write_ssh_entry(ctx, name, instance_id):
     """The box's ~/.ssh/barn.conf entry, with this person's key and AWS profile."""
     s = ctx.settings
-    entry = ssh.host_entry(name, instance_id, BOX_USER, s.private_key_path, s.aws_profile, ctx.account.region)
+    entry = ssh.host_entry(name, instance_id, BOX_USER, s.private_key_path, ctx.aws.profile, ctx.account.region)
     ssh.write_host(name, entry)
 
 
@@ -336,7 +342,7 @@ def connect(ctx, name, quiet=False):
     state = inst["State"]["Name"]
     owner = tag_map(inst).get("barn:owner", "?")
     if not quiet:
-        ui.done(f"{name} → {inst['InstanceId']}", f"owner {owner} · ~/.ssh/barn.conf")
+        ui.done(f"{name} → {inst['InstanceId']}", f"account {ctx.account.name} · owner {owner} · ~/.ssh/barn.conf")
     if state != "running":
         ui.warn(f"{name} is {state}", f"ask a manager to run `barn start {name}`" if state == "stopped" else "")
     elif not quiet:
@@ -373,14 +379,15 @@ def boxes(ctx):
 
 
 def box_table(found, me, width=120):
+    """found: {(account, name): box} as boxes() returns per account."""
     table = Table(box=box.SIMPLE_HEAD, header_style="muted", pad_edge=False)
     # The instance ID is the first thing to go in a narrow terminal.
-    columns = ("NAME", "OWNER", "STATE", "TYPE", "UPTIME", "COST") + (("INSTANCE",) if width >= 100 else ())
+    columns = ("ACCOUNT", "NAME", "OWNER", "STATE", "TYPE", "UPTIME", "COST") + (("INSTANCE",) if width >= 110 else ())
     for col in columns:
         table.add_column(col, no_wrap=True, justify="right" if col in ("UPTIME", "COST") else "left")
     hourly_total = 0.0
-    for name in sorted(found):
-        b = found[name]
+    for account, name in sorted(found):
+        b = found[account, name]
         state = b.get("state", "no box")
         up = b.get("uptime")
         hourly = HOURLY.get(b.get("type"))
@@ -392,6 +399,7 @@ def box_table(found, me, width=120):
             cost.append(f"${b['volume_gb'] * GP3_MONTH_PER_GB:.0f}/mo")
         owner = b.get("owner") or "?"
         row = [
+            account,
             f"[name]{name}[/]",
             f"[accent]{owner} (you)[/]" if owner == me else owner,
             f"[{STATE_STYLE.get(state, 'muted')}]{state}[/]",
@@ -403,7 +411,11 @@ def box_table(found, me, width=120):
         table.add_row(*row[: len(columns)])
     running = sum(1 for b in found.values() if b.get("state") == "running")
     mine = sum(1 for b in found.values() if b.get("owner") == me)
-    table.caption = f"{len(found)} box{'es' * (len(found) != 1)} ({mine} yours) · {running} running" + (
+    accounts = len({a for a, _ in found})
+    table.caption = (
+        f"{len(found)} box{'es' * (len(found) != 1)} in {accounts} account{'s' * (accounts != 1)} "
+        f"({mine} yours) · {running} running"
+    ) + (
         f" · ~${hourly_total:.2f}/h" if hourly_total else ""
     )
     table.caption_style = "muted"
@@ -411,12 +423,40 @@ def box_table(found, me, width=120):
     return table
 
 
-def list_boxes(ctx):
-    found = boxes(ctx)
+def list_boxes(account=None, make_context=None):
+    """Every box in one account, or in every account with a file in accounts/.
+    An account that fails (no profile, expired credentials) is reported and
+    skipped when listing all; returns 1 only when every account failed."""
+    home = app_home()
+    settings = load_settings(home)
+    make_context = make_context or (lambda name: Context(account=name, settings=settings))
+    names = [account] if account else account_names(home)
+    if not names:
+        raise ConfigError(f"no account files in {home / 'accounts'}; run `barn init`")
+
+    def fetch(name):
+        return boxes(make_context(name))
+
+    found, failed = {}, 0
+    with ui.step(f"Reading {len(names)} account{'s' * (len(names) != 1)}"), ThreadPoolExecutor(8) as pool:
+        results = [(n, pool.submit(fetch, n)) for n in names]
+    for name, future in results:
+        try:
+            found.update({(name, box_name): b for box_name, b in future.result().items()})
+        except (ConfigError, ClientError, BotoCoreError) as e:
+            if account:
+                raise
+            failed += 1
+            err = e.response.get("Error", {}) if isinstance(e, ClientError) else {}
+            ui.warn(f"skipped account {name}", f"{err.get('Code')}: {err.get('Message', '')}" if err else str(e))
+    if failed == len(names):
+        return 1
     if not found:
-        ui.info("no boxes in this account", f"create one with `barn create {ctx.settings.user}-dev`")
-        return
-    ui.out.print(box_table(found, ctx.settings.user, ui.out.width))
+        where = f"account {account}" if account else "any account"
+        ui.info(f"no boxes in {where}", f"create one with `barn create {settings.user}-dev`")
+        return 0
+    ui.out.print(box_table(found, settings.user, ui.out.width))
+    return 0
 
 
 DURATION = re.compile(r"^(\d+)([mhd])$")
@@ -446,7 +486,8 @@ def hold(ctx, name, duration):
 
 app = typer.Typer(
     name="barn",
-    help="EC2 dev boxes for long-running agent runs. Managers create them; anyone can connect.",
+    help="EC2 dev boxes for long-running agent runs, in one or more AWS accounts. "
+    "Managers create them; anyone can connect.",
     epilog=f"Settings, account files and terraform state live in {app_home()} (BARN_HOME).",
     no_args_is_help=True,
     rich_markup_mode="rich",
@@ -459,6 +500,10 @@ Name = Annotated[
     str, typer.Argument(metavar="NAME", help="The box's full name, e.g. [cyan]zach-dev[/]; also its SSH alias.")
 ]
 Verbose = Annotated[bool, typer.Option("--verbose", "-v", help="Stream terraform output instead of a spinner.")]
+Account = Annotated[
+    str | None,
+    typer.Option("--account", metavar="ACCOUNT", help="The box's account, from accounts/ (default: default_account)."),
+]
 
 
 def _version(value: bool):
@@ -500,9 +545,10 @@ def create_cmd(
     name: Name,
     size: Annotated[str | None, typer.Option(metavar="TYPE", help="EC2 instance type (default: default_size).")] = None,
     verbose: Verbose = False,
+    account: Account = None,
 ):
     """Create or update a box: home volume, then instance. Re-run with --size to resize."""
-    create(Context(verbose), name, size)
+    create(Context(verbose, account), name, size)
 
 
 @app.command("destroy", rich_help_panel=MANAGE)
@@ -511,41 +557,46 @@ def destroy_cmd(
     volume: Annotated[bool, typer.Option("--volume", help="Also delete the home volume (asks first).")] = False,
     force: Annotated[bool, typer.Option("--force", help="Destroy a box someone else created.")] = False,
     verbose: Verbose = False,
+    account: Account = None,
 ):
     """Delete the box and keep the home volume."""
-    raise typer.Exit(destroy(Context(verbose), name, volume, force))
+    raise typer.Exit(destroy(Context(verbose, account), name, volume, force))
 
 
 @app.command("start", rich_help_panel=MANAGE)
-def start_cmd(name: Name):
+def start_cmd(name: Name, account: Account = None):
     """Start a stopped box."""
-    start(Context(), name)
+    start(Context(account=account), name)
 
 
 @app.command("stop", rich_help_panel=MANAGE)
-def stop_cmd(name: Name):
+def stop_cmd(name: Name, account: Account = None):
     """Stop the box. A stopped box costs only its volumes."""
-    stop(Context(), name)
+    stop(Context(account=account), name)
 
 
 @app.command("sync", rich_help_panel=MANAGE)
-def sync_cmd(name: Name):
+def sync_cmd(name: Name, account: Account = None):
     """Push your guest_keys and home overlay onto your box. Never deletes files; skips them while agents run."""
     from .sync import sync
 
-    raise typer.Exit(sync(Context(), name))
+    raise typer.Exit(sync(Context(account=account), name))
 
 
 @app.command("list", rich_help_panel=CONNECT)
-def list_cmd():
-    """Every box in the account: owner, state, type, uptime, rough cost."""
-    list_boxes(Context())
+def list_cmd(
+    account: Annotated[
+        str | None, typer.Option("--account", metavar="ACCOUNT", help="Only this account (default: every account).")
+    ] = None,
+):
+    """Every box in every account: account, owner, state, type, uptime, rough cost."""
+    raise typer.Exit(list_boxes(account))
 
 
 @app.command("connect", rich_help_panel=CONNECT)
-def connect_cmd(name: Name):
+def connect_cmd(name: Name, account: Account = None):
     """Add the box to ~/.ssh/barn.conf, so plain ssh, scp, rsync and herdr --remote work."""
-    connect(Context(), name)
+    connect(Context(account=account), name)
 
 
 @app.command(
@@ -553,20 +604,20 @@ def connect_cmd(name: Name):
     rich_help_panel=CONNECT,
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )
-def ssh_cmd(typer_ctx: typer.Context, name: Name):
+def ssh_cmd(typer_ctx: typer.Context, name: Name, account: Account = None):
     """SSH into the box through SSM. Extra arguments go to ssh, e.g. [cyan]-N -L 8080:localhost:8080[/]."""
-    inst = connect(Context(), name, quiet=True)
+    inst = connect(Context(account=account), name, quiet=True)
     if inst["State"]["Name"] in ("stopped", "stopping"):
         raise typer.Exit(1)  # connect said so; a pending box is reachable in a moment
     os.execvp("ssh", ["ssh", name, *typer_ctx.args])
 
 
 @app.command("doctor", rich_help_panel=CONNECT)
-def doctor_cmd(name: Name):
+def doctor_cmd(name: Name, account: Account = None):
     """Check AWS, permissions, SSM, first boot, tools, network and sign-in."""
     from .doctor import doctor
 
-    raise typer.Exit(doctor(Context(), name))
+    raise typer.Exit(doctor(Context(account=account), name))
 
 
 @app.command("hold", rich_help_panel=CONNECT)

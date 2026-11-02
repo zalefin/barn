@@ -1,6 +1,5 @@
 # barn settings. Written by `barn init`; edit freely. Run `barn init` again for a checklist.
-account = "$account"              # selects accounts/<account>.toml next to this file
-aws_profile = "$aws_profile"      # AWS CLI profile that assumes barn-manager or barn-guest
+default_account = "$account"      # accounts/<account>.toml, used when a command has no --account
 user = "$user"                    # barn:owner on boxes you create (box names are your choice, e.g. $user-dev)
 ssh_public_key = "$ssh_public_key"
 default_size = "m7i.xlarge"       # 4 vCPU, 16 GiB
@@ -13,3 +12,9 @@ volume_gb = 100
 # guest_keys = [
 #   "ssh-ed25519 AAAA... alice",
 # ]
+
+# One AWS CLI profile per account (accounts/<account>.toml), assuming
+# barn-manager or barn-guest there. Add a line for each account you use; keep
+# this table last (every key below [aws_profiles] belongs to it).
+[aws_profiles]
+$account = "$aws_profile"

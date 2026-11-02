@@ -72,18 +72,17 @@ class FakeEc2:
 class FakeCtx(cli.Context):
     """A Context with fake settings, account and EC2; no files or AWS."""
 
-    def __init__(self, ec2, user="zach", guest_keys=(), home=None):
+    def __init__(self, ec2, user="zach", guest_keys=(), home=None, account="sandbox"):
         self.home = home
         self.settings = SimpleNamespace(
             user=user,
-            aws_profile=f"barn-{user}-manager",
             private_key_path=f"/keys/{user}",
             guest_keys=list(guest_keys),
             shared_home_path=None,
             default_size="m7i.xlarge",
         )
-        self.account = SimpleNamespace(region="us-east-1", name="sandbox", manager_role_arn="")
-        self.aws = SimpleNamespace(client=lambda name, **kw: ec2)
+        self.account = SimpleNamespace(region="us-east-1", name=account, manager_role_arn="")
+        self.aws = SimpleNamespace(client=lambda name, **kw: ec2, profile=f"barn-{user}-{account}", account=self.account)
         self.verbose = False
         self._roots_installed = True
 
@@ -95,9 +94,11 @@ class FakeCtx(cli.Context):
 
 
 def test_state_key_and_data_dir_use_the_box_name(tmp_path):
-    t = Terraform(tmp_path, None, "zach-a2n", "volume")
+    aws = SimpleNamespace(account=SimpleNamespace(name="sandbox"))
+    t = Terraform(tmp_path, aws, "zach-a2n", "volume")
     assert t.state_key == "env/zach-a2n/volume.tfstate"
-    assert t.data_dir == tmp_path / "state" / "zach-a2n" / "volume"
+    # Box names are unique per account only, so local data dirs are per account.
+    assert t.data_dir == tmp_path / "state" / "sandbox" / "zach-a2n" / "volume"
 
 
 def test_barn_conf_entry_uses_the_full_name(tmp_path, monkeypatch):
@@ -107,7 +108,7 @@ def test_barn_conf_entry_uses_the_full_name(tmp_path, monkeypatch):
     conf = (tmp_path / ".ssh" / "barn.conf").read_text()
     assert "Host zach-dev\n" in conf and "HostKeyAlias zach-dev" in conf and "HostName i-0abc" in conf
     # The caller's own key and profile, not the owner's.
-    assert "IdentityFile /keys/foo" in conf and "--profile barn-foo-manager" in conf
+    assert "IdentityFile /keys/foo" in conf and "--profile barn-foo-sandbox" in conf
 
 
 # --- the owner guard ---
@@ -187,7 +188,7 @@ def test_connect_writes_entry_and_reports_state(tmp_path, monkeypatch, capsys):
     assert "HostName i-9" in (tmp_path / ".ssh" / "barn.conf").read_text()
     err = capsys.readouterr().err
     assert "zach-dev is stopped" in err and "barn start zach-dev" in err
-    with pytest.raises(ConfigError, match="no box named 'nope'"):
+    with pytest.raises(ConfigError, match="no box named 'nope' in account sandbox.*--account"):
         cli.connect(ctx, "nope")
     with pytest.raises(ConfigError, match="bad box name"):
         cli.connect(ctx, "Bad_Name")
@@ -215,10 +216,46 @@ def test_list_shows_every_box_with_owner():
     from rich.console import Console
 
     console = Console(width=140, record=True, theme=ui.THEME)
-    console.print(cli.box_table(found, "zach", 140))
+    console.print(cli.box_table({("sandbox", n): b for n, b in found.items()}, "zach", 140))
     text = console.export_text()
     assert "OWNER" in text and "zach (you)" in text and "alice (you)" not in text
-    assert "3 boxes (2 yours) · 1 running" in text
+    assert "3 boxes in 1 account (2 yours) · 1 running" in text
+
+
+def test_list_spans_accounts_and_names_each_rows_account(tmp_path, monkeypatch, capsys):
+    from botocore.exceptions import TokenRetrievalError
+
+    monkeypatch.setenv("BARN_HOME", str(tmp_path))
+    monkeypatch.delenv("BARN_SETTINGS", raising=False)
+    (tmp_path / "accounts").mkdir()
+    for name in ("expired", "sandbox", "work"):
+        (tmp_path / "accounts" / f"{name}.toml").write_text("")
+    (tmp_path / "config.toml").write_text('default_account = "sandbox"\nuser = "zach"\n')
+    ec2s = {
+        # The same box name in two accounts is two boxes.
+        "sandbox": FakeEc2([instance("zach-dev", "zach", "i-1")], [volume("zach-dev", "zach")]),
+        "work": FakeEc2([instance("zach-dev", "zach", "i-2", state="stopped"), instance("bob-gpu", "bob", "i-3")]),
+    }
+
+    def make(name):
+        if name == "expired":
+            raise TokenRetrievalError(provider="sso", error_msg="Token has expired")
+        return FakeCtx(ec2s[name], account=name)
+
+    monkeypatch.setattr(ui.out, "width", 140)
+    assert cli.list_boxes(make_context=make) == 0
+    captured = capsys.readouterr()
+    rows = [line.split() for line in captured.out.splitlines() if "zach-dev" in line or "bob-gpu" in line]
+    assert [r[:2] for r in rows] == [["sandbox", "zach-dev"], ["work", "bob-gpu"], ["work", "zach-dev"]]
+    assert "3 boxes in 2 accounts (2 yours) · 2 running" in captured.out
+    # One account's bad credentials do not hide the others.
+    assert "skipped account expired" in captured.err and "retrieving token from sso" in captured.err
+
+    assert cli.list_boxes("work", make_context=make) == 0
+    assert "sandbox" not in capsys.readouterr().out
+    # Asked for by name, a failing account is an error.
+    with pytest.raises(TokenRetrievalError):
+        cli.list_boxes("expired", make_context=make)
 
 
 # --- guest keys ---
@@ -227,12 +264,12 @@ def test_list_shows_every_box_with_owner():
 def test_guest_keys_setting(tmp_path, monkeypatch):
     monkeypatch.delenv("BARN_SETTINGS", raising=False)
     cfg = tmp_path / "config.toml"
-    cfg.write_text(f'account = "a"\naws_profile = "p"\nguest_keys = ["{KEY_A}", " {KEY_F} "]\n')
+    cfg.write_text(f'default_account = "a"\nguest_keys = ["{KEY_A}", " {KEY_F} "]\n')
     assert load_settings(tmp_path).guest_keys == [KEY_A, KEY_F]
-    cfg.write_text('account = "a"\naws_profile = "p"\nguest_keys = ["not a key"]\n')
+    cfg.write_text('default_account = "a"\nguest_keys = ["not a key"]\n')
     with pytest.raises(ConfigError, match="guest_keys"):
         load_settings(tmp_path)
-    cfg.write_text(f'account = "a"\naws_profile = "p"\nguest_keys = "{KEY_A}"\n')
+    cfg.write_text(f'default_account = "a"\nguest_keys = "{KEY_A}"\n')
     with pytest.raises(ConfigError, match="guest_keys must be a list"):
         load_settings(tmp_path)
 

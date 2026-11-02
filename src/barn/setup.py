@@ -11,9 +11,10 @@ from pathlib import Path
 from string import Template
 
 import boto3
+from rich.markup import escape
 
 from . import ui
-from .config import PLACEHOLDER, ConfigError, placeholders
+from .config import PLACEHOLDER, RENAMED, ConfigError, account_names, check_account_name, placeholders
 from .sync import short
 
 TEMPLATES = Path(__file__).parent / "templates"
@@ -41,18 +42,20 @@ def _write_new(path, text, mode=0o644):
 
 
 def scaffold(home, account=None, aws_profile=None, account_file=None):
-    """Create what is missing in home. Returns [(path, action, detail)]."""
+    """Create what is missing in home. Returns [(path, action, detail)]. A new
+    config.toml makes the account its default_account; with an existing one, the
+    account file is added and todo() asks for its profile."""
     if account_file:
         account_file = Path(account_file).expanduser()
         if not account_file.is_file():
             raise ConfigError(f"no such account file: {account_file}")
     config = home / "config.toml"
-    if config.exists() and not account:
+    if config.exists() and not account and not account_file:
         try:
-            account = tomllib.loads(config.read_text()).get("account")
+            account = tomllib.loads(config.read_text()).get("default_account")
         except tomllib.TOMLDecodeError:
             pass  # todo() reports it
-    account = account or (account_file.stem if account_file else "default")
+    account = check_account_name(account or (account_file.stem if account_file else "default"), "--account")
 
     done = []
     text = Template((TEMPLATES / "config.toml").read_text()).substitute(
@@ -124,20 +127,31 @@ def todo(home):
     left = placeholders(settings)
     if left:
         items.append((True, config, f"set {', '.join(left)}"))
-    profile = settings.get("aws_profile", "")
-    if profile and profile != PLACEHOLDER and profile not in boto3.Session().available_profiles:
-        items.append((True, Path("~/.aws/config"), f"add profile {profile!r} (or change aws_profile)"))
+    for old in ("account", "aws_profile"):
+        if old in settings:
+            items.append((True, config, RENAMED[old]))
     key = Path(settings.get("ssh_public_key", "~/.ssh/id_ed25519.pub")).expanduser()
     if not key.exists():
         items.append((True, key, "create it: ssh-keygen -t ed25519 (or change ssh_public_key)"))
 
-    acct = home / "accounts" / f"{settings.get('account')}.toml"
-    if not acct.exists():
-        items.append((True, acct, "missing; copy your account file here"))
-    elif (data := _toml(acct, items)) is not None:
-        left = placeholders(data)
-        if left:
-            items.append((True, acct, f"fill in {', '.join(left)} from whoever set up the account"))
+    default = settings.get("default_account")
+    profiles = settings.get("aws_profiles", {})
+    profiles = profiles if isinstance(profiles, dict) else {}
+    known = boto3.Session().available_profiles
+    for name in sorted({*account_names(home), *([default] if isinstance(default, str) else [])}):
+        acct = home / "accounts" / f"{name}.toml"
+        if not acct.exists():
+            items.append((True, acct, "missing; copy your account file here (or change default_account)"))
+            continue
+        if (data := _toml(acct, items)) is not None:
+            left = placeholders(data)
+            if left:
+                items.append((True, acct, f"fill in {', '.join(left)} from whoever set up the account"))
+        profile = profiles.get(name, "")
+        if not profile:
+            items.append((True, config, f'add `{name} = "<profile>"` under [aws_profiles]'))
+        elif profile != PLACEHOLDER and profile not in known:
+            items.append((True, Path("~/.aws/config"), f"add profile {profile!r} (or change aws_profiles.{name})"))
 
     env = home / "home" / ".barn" / "env"
     if not any(line.strip().startswith("export ") for line in env.read_text().splitlines()):
@@ -162,7 +176,7 @@ def init(home, account=None, aws_profile=None, account_file=None):
     ui.err.print("\n[name]To do[/]" if items else "")
     for n, (needed, path, what) in enumerate(items, 1):
         label = f"{n}." if needed else "·"
-        ui.err.print(f" [accent]{label}[/] {short(path)}  [muted]{what}{'' if needed else ' (optional)'}[/]")
+        ui.err.print(f" [accent]{label}[/] {escape(short(path))}  [muted]{escape(what)}{'' if needed else ' (optional)'}[/]")
 
     ui.err.print()
     if required or any(s == "fail" for s, _, _ in tools):

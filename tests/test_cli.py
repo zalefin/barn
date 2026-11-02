@@ -4,7 +4,7 @@ from typer.testing import CliRunner
 
 from barn import cli
 from barn.cli import app, parse_duration
-from barn.config import UBUNTU_AMI, ConfigError, check_name, load_account, load_settings
+from barn.config import UBUNTU_AMI, ConfigError, account_names, check_name, load_account, load_settings
 from barn.sync import changed_files, credential_files, rsync_cmd
 from barn.tf import PACKAGE, install_roots, summary
 from barn.ui import elapsed
@@ -33,7 +33,7 @@ def test_box_names():
 def calls(monkeypatch):
     """Record what each command would do, without AWS."""
     seen = []
-    monkeypatch.setattr(cli, "Context", lambda verbose=False: f"ctx(verbose={verbose})")
+    monkeypatch.setattr(cli, "Context", lambda verbose=False, account=None: f"ctx({verbose}, {account})")
     for name in ("create", "destroy", "hold"):
         monkeypatch.setattr(cli, name, lambda *a, _n=name: seen.append((_n, *a)) or 0)
     monkeypatch.setattr(cli.os, "execvp", lambda *a: seen.append(("execvp", *a)))
@@ -43,27 +43,33 @@ def calls(monkeypatch):
 def test_commands_parse(calls):
     run = CliRunner().invoke
     assert run(app, ["create", "zach-dev", "--size", "t3.micro", "-v"]).exit_code == 0
+    assert run(app, ["create", "zach-dev", "--account", "work"]).exit_code == 0
     assert run(app, ["destroy", "zach-dev", "--volume"]).exit_code == 0
-    assert run(app, ["destroy", "alice-dev", "--force"]).exit_code == 0
+    assert run(app, ["destroy", "alice-dev", "--force", "--account", "work"]).exit_code == 0
     assert run(app, ["hold", "zach-dev", "8h"]).exit_code == 0
     assert calls == [
-        ("create", "ctx(verbose=True)", "zach-dev", "t3.micro"),
-        ("destroy", "ctx(verbose=False)", "zach-dev", True, False),
-        ("destroy", "ctx(verbose=False)", "alice-dev", False, True),
-        ("hold", "ctx(verbose=False)", "zach-dev", "8h"),
+        ("create", "ctx(True, None)", "zach-dev", "t3.micro"),
+        ("create", "ctx(False, work)", "zach-dev", None),
+        ("destroy", "ctx(False, None)", "zach-dev", True, False),
+        ("destroy", "ctx(False, work)", "alice-dev", False, True),
+        ("hold", "ctx(False, None)", "zach-dev", "8h"),
     ]
 
 
 def test_ssh_refreshes_entry_and_passes_extra_args_through(calls, monkeypatch):
-    monkeypatch.setattr(cli, "Context", lambda: "ctx")
+    monkeypatch.setattr(cli, "Context", lambda account=None: f"ctx({account})")
     state = {"Name": "running"}
-    monkeypatch.setattr(cli, "connect", lambda ctx, name, quiet: calls.append(("connect", name)) or {"State": state})
+    monkeypatch.setattr(cli, "connect", lambda ctx, name, quiet: calls.append(("connect", ctx, name)) or {"State": state})
     r = CliRunner().invoke(app, ["ssh", "alice-dev", "-N", "-L", "8080:localhost:8080"])
     assert r.exit_code == 0, r.output
     assert calls == [
-        ("connect", "alice-dev"),
+        ("connect", "ctx(None)", "alice-dev"),
         ("execvp", "ssh", ["ssh", "alice-dev", "-N", "-L", "8080:localhost:8080"]),
     ]
+    calls.clear()
+    # --account is barn's (anywhere after the name); the rest still goes to ssh.
+    assert CliRunner().invoke(app, ["ssh", "alice-dev", "-N", "--account", "work", "-a"]).exit_code == 0
+    assert calls == [("connect", "ctx(work)", "alice-dev"), ("execvp", "ssh", ["ssh", "alice-dev", "-N", "-a"])]
     calls.clear()
     state["Name"] = "pending"  # just started: reachable in a moment
     assert CliRunner().invoke(app, ["ssh", "alice-dev"]).exit_code == 0
@@ -71,7 +77,7 @@ def test_ssh_refreshes_entry_and_passes_extra_args_through(calls, monkeypatch):
     calls.clear()
     state["Name"] = "stopped"
     assert CliRunner().invoke(app, ["ssh", "alice-dev"]).exit_code == 1
-    assert calls == [("connect", "alice-dev")]
+    assert calls == [("connect", "ctx(None)", "alice-dev")]
 
 
 def test_help_lists_every_command():
@@ -104,11 +110,18 @@ ACCOUNT = (
 def test_load_settings_and_account(tmp_path, monkeypatch):
     monkeypatch.delenv("BARN_SETTINGS", raising=False)
     (tmp_path / "accounts").mkdir()
-    (tmp_path / "config.toml").write_text('account = "personal"\naws_profile = "admin"\nuser = "zach"\n')
+    (tmp_path / "config.toml").write_text(
+        'default_account = "personal"\nuser = "zach"\n[aws_profiles]\npersonal = "admin"\nwork = "dev"\n'
+    )
     (tmp_path / "accounts" / "personal.toml").write_text(ACCOUNT + '[extra_tags]\n"cost-center" = "42"\n')
+    (tmp_path / "accounts" / "work.toml").write_text(ACCOUNT)
     s = load_settings(tmp_path)
     assert s.default_size == "m7i.xlarge" and s.shared_home_path is None
-    a = load_account(tmp_path, s.account)
+    assert (s.aws_profile("personal"), s.aws_profile("work")) == ("admin", "dev")
+    with pytest.raises(ConfigError, match=r'add `other = "<profile>"` under \[aws_profiles\]'):
+        s.aws_profile("other")
+    assert account_names(tmp_path) == ["personal", "work"]
+    a = load_account(tmp_path, s.default_account)
     assert a.name == "personal" and a.extra_tags == {"cost-center": "42"}
     assert a.ami_ssm_parameter == UBUNTU_AMI and a.manager_role_arn == ""
     assert s.guest_keys == []
@@ -116,8 +129,15 @@ def test_load_settings_and_account(tmp_path, monkeypatch):
 
 def test_load_settings_rejects_unknown_keys(tmp_path, monkeypatch):
     monkeypatch.delenv("BARN_SETTINGS", raising=False)
-    (tmp_path / "config.toml").write_text('account = "a"\naws_profile = "p"\ntypo = 1\n')
+    (tmp_path / "config.toml").write_text('default_account = "a"\ntypo = 1\n')
     with pytest.raises(ConfigError):
+        load_settings(tmp_path)
+    # Before multiple accounts: the error says what replaced the old keys.
+    (tmp_path / "config.toml").write_text('account = "a"\naws_profile = "p"\n')
+    with pytest.raises(ConfigError, match="`account` is now `default_account`.*aws_profiles"):
+        load_settings(tmp_path)
+    (tmp_path / "config.toml").write_text('default_account = "../x"\n')
+    with pytest.raises(ConfigError, match="bad account name"):
         load_settings(tmp_path)
 
 
@@ -193,11 +213,12 @@ def test_init_scaffolds_without_overwriting(tmp_path, monkeypatch):
     ]
     assert (tmp_path / "home" / ".barn" / "env").stat().st_mode & 0o777 == 0o600
     config = (tmp_path / "config.toml").read_text()
-    assert 'user = "zach"' in config and f'aws_profile = "{PLACEHOLDER}"' in config
+    assert 'user = "zach"' in config and 'default_account = "default"' in config
+    assert f'[aws_profiles]\ndefault = "{PLACEHOLDER}"' in config
 
     required = [what for needed, _, what in todo(tmp_path) if needed]
-    assert any("aws_profile" in w for w in required) and any("state_bucket" in w for w in required)
-    with pytest.raises(ConfigError, match="fill in aws_profile"):
+    assert any("aws_profiles.default" in w for w in required) and any("state_bucket" in w for w in required)
+    with pytest.raises(ConfigError, match="fill in aws_profiles.default"):
         load_settings(tmp_path)
 
     (tmp_path / "config.toml").write_text("edited")
@@ -206,15 +227,25 @@ def test_init_scaffolds_without_overwriting(tmp_path, monkeypatch):
 
 
 def test_init_copies_account_file(tmp_path, monkeypatch):
-    from barn.setup import scaffold
+    from barn.setup import scaffold, todo
 
     src = tmp_path / "sandbox.toml"
     src.write_text(ACCOUNT)
     home = tmp_path / "home"
     scaffold(home, aws_profile="dev", account_file=src)
     assert (home / "accounts" / "sandbox.toml").read_text() == ACCOUNT
-    assert 'account = "sandbox"' in (home / "config.toml").read_text()
+    config = (home / "config.toml").read_text()
+    assert 'default_account = "sandbox"' in config and '[aws_profiles]\nsandbox = "dev"' in config
     monkeypatch.delenv("BARN_SETTINGS", raising=False)
-    assert load_account(home, load_settings(home).account).security_group_id == "sg-1"
+    assert load_account(home, load_settings(home).default_account).security_group_id == "sg-1"
+
+    # A second account file is added next to the first; config.toml is kept,
+    # and the to-do list asks for the new account's profile.
+    other = tmp_path / "work.toml"
+    other.write_text(ACCOUNT)
+    done = {p.relative_to(home).as_posix(): a for p, a, _ in scaffold(home, account_file=other)}
+    assert done["accounts/work.toml"] == "copied" and done["config.toml"] == "kept"
+    assert load_settings(home).default_account == "sandbox"
+    assert any('add `work = "<profile>"` under [aws_profiles]' in w for _, _, w in todo(home))
     with pytest.raises(ConfigError, match="no such account file"):
         scaffold(tmp_path / "other", account_file=tmp_path / "missing.toml")

@@ -1,6 +1,6 @@
 """Terraform wrapper. The roots ship inside this package and are copied into the
 barn home, so terraform always runs from the same place: one data dir
-per box and root, state in the account's S3 bucket."""
+per account, box and root, state in the account's S3 bucket."""
 
 import json
 import os
@@ -65,7 +65,8 @@ class Terraform:
         self.name = name
         self.root = root
         self.dir = home / "terraform" / root
-        self.data_dir = home / "state" / name / root
+        # Box names are unique per account, not across accounts.
+        self.data_dir = home / "state" / aws.account.name / name / root
         self._initialized = False
 
     def _environ(self):

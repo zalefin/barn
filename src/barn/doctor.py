@@ -195,7 +195,7 @@ def doctor(ctx, name):
         ui.err.print(f"\n[name]{title}[/]")
 
     name = check_name(name)
-    ui.header(name, ctx.account.region, f"account {ctx.account.name}", f"profile {ctx.settings.aws_profile}")
+    ui.header(name, ctx.account.region, f"account {ctx.account.name}", f"profile {ctx.aws.profile}")
     section("AWS")
     try:
         with ui.step("Checking credentials and permissions"):

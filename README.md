@@ -1,7 +1,7 @@
 # barn
 
 EC2 dev boxes for long-running, headless Claude Code and Kiro CLI
-runs. Each box runs **herdr**: you start agents, detach, close your laptop,
+runs, in one or more AWS accounts. Each box runs **herdr**: you start agents, detach, close your laptop,
 and come back later. You reach the box with SSH tunnelled through AWS SSM.
 Nothing listens on the network.
 
@@ -39,16 +39,30 @@ Everything local lives in `~/.config/barn/` (set `BARN_HOME` to move it).
 ```bash
 barn init                                                   # templates with CHANGE-ME placeholders
 barn init --account-file sandbox.toml --aws-profile my-dev   # or start from your admin's account file
+barn init --account-file work.toml                           # later: add another account
 ```
 
 It never overwrites a file, so run it again after editing to see what is
 left; other commands refuse to run while a `CHANGE-ME` remains.
 
-`account` selects `accounts/<account>.toml`, which says where the account's
-network, roles and state bucket are ([docs](docs/account-prerequisites.md)). `aws_profile` is used as-is by
-boto3, Terraform and SSH; put the role in the profile (`role_arn` +
-`source_profile`, or SSO). `user` (default `$USER`) goes into the
-`barn:owner` tag of boxes you create. On the box everyone logs in as `ubuntu`
+Each account you use has a file `accounts/<account>.toml`, which says where
+the account's network, roles and state bucket are
+([docs](docs/account-prerequisites.md)), and an AWS CLI profile under
+`[aws_profiles]` in `config.toml`:
+
+```toml
+default_account = "sandbox"   # used when a command has no --account
+
+[aws_profiles]
+sandbox = "barn-zach-manager"
+work = "barn-zach-work"
+```
+
+The profile is used as-is by boto3, Terraform and SSH; put the role in the
+profile (`role_arn` + `source_profile`, or SSO). Every box command takes
+`--account <account>`, and `barn list` shows the boxes of every account.
+
+`user` (default `$USER`) goes into the `barn:owner` tag of boxes you create. On the box everyone logs in as `ubuntu`
 (UID 1000, the same UID most container images use).
 
 Put your tokens and personal config in `~/.config/barn/home/` (see
@@ -59,18 +73,21 @@ containing `export CLAUDE_CODE_OAUTH_TOKEN=...` and `export KIRO_API_KEY=...`.
 
 Box names are yours to choose (2–40 lowercase letters, digits and dashes),
 unique in the account, and the same for everyone: the name is the SSH alias,
-the box's hostname and its `barn:name` tag. A habit like `<you>-<purpose>`
+the box's hostname and its `barn:name` tag. Two accounts may each have a box
+of the same name, but `~/.ssh/barn.conf` holds one entry per name: plain `ssh`
+reaches whichever one you last connected to. A habit like `<you>-<purpose>`
 keeps them apart.
 
 ```bash
-barn create zach-dev   # volume + box; ~5 min first boot (managers)
+barn create zach-dev   # volume + box in default_account; ~5 min first boot (managers)
 barn sync zach-dev     # push your home/ and guest_keys onto the box
 barn doctor zach-dev   # everything green?
 barn ssh zach-dev      # or plain: ssh zach-dev
 herdr                  # on the box: start/attach the session
 ```
 
-Inside herdr, run `claude` or `kiro-cli` in panes. Detach with `ctrl+b q` and
+For a box in another account, add `--account <account>` to any of these
+(`barn create zach-dev --account work`). Inside herdr, run `claude` or `kiro-cli` in panes. Detach with `ctrl+b q` and
 reattach later with `herdr`. Don't run herdr inside tmux.
 
 | Command | Who | What it does |
@@ -80,7 +97,7 @@ reattach later with `herdr`. Don't run herdr inside tmux.
 | `destroy <name> --volume` | manager | Also deletes the home volume, after you type the name to confirm. |
 | `stop` / `start <name>` | manager | Stops or starts any box. A stopped box costs only its volumes. |
 | `sync <name>` | manager | Pushes your `guest_keys` and copies your home directory overlay to your box. Local files win, nothing is deleted, and files are skipped while agents are running. Refuses someone else's box. |
-| `list` | anyone | Every box in the account: owner (yours marked), state, type, uptime, rough cost. |
+| `list [--account A]` | anyone | Every box in every account (or just one): account, owner (yours marked), state, type, uptime, rough cost. An account whose credentials fail is skipped with a warning. |
 | `connect <name>` | anyone | Adds the box to `~/.ssh/barn.conf` with your key and profile, so plain `ssh`, `scp`, `rsync` and `herdr --remote` work. Says if it is stopped. |
 | `ssh <name> [args]` | anyone | `connect`, then `ssh <name>`. |
 | `doctor <name>` | anyone | Checks AWS, IAM (managers only), SSM, bootstrap, tools, network, linger, home mount and sign-in. |
@@ -179,11 +196,11 @@ On your laptop, in `~/.config/barn/`:
 
 | Path | What |
 |---|---|
-| `config.toml` | Your settings. |
-| `accounts/<name>.toml` | Where an account's prerequisites are ([docs](docs/account-prerequisites.md)). |
+| `config.toml` | Your settings, `default_account` and one AWS profile per account. |
+| `accounts/<name>.toml` | Where an account's prerequisites are ([docs](docs/account-prerequisites.md)), one file per account. |
 | `home/` | Synced onto your boxes. |
 | `terraform/`, `bootstrap/` | Managed: refreshed from the installed package on every run, so Terraform always runs here. Don't edit. |
-| `state/` | Terraform data dirs and logs (`<name>/<root>/apply.log`) per box, and the provider cache. The state itself is in the account's S3 bucket (`env/<name>/`). |
+| `state/` | Terraform data dirs and logs (`<account>/<name>/<root>/apply.log`) per box, and the provider cache. The state itself is in the account's S3 bucket (`env/<name>/`). |
 
 On the box:
 

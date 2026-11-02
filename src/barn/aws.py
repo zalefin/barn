@@ -1,6 +1,6 @@
 """AWS sessions. Everything (boto3, terraform, the SSH ProxyCommand) uses the
-person's own AWS CLI profile; if that profile assumes a role, the AWS SDKs
-and CLI do it themselves."""
+person's own AWS CLI profile for the account ([aws_profiles] in config.toml);
+if that profile assumes a role, the AWS SDKs and CLI do it themselves."""
 
 import boto3
 from botocore.exceptions import ProfileNotFound
@@ -9,13 +9,15 @@ from .config import ConfigError
 
 
 class Aws:
-    def __init__(self, account, settings):
+    def __init__(self, account, profile):
         self.account = account
-        self.profile = settings.aws_profile
+        self.profile = profile
         try:
             self.session = boto3.Session(profile_name=self.profile, region_name=account.region)
         except ProfileNotFound as e:
-            raise ConfigError(f"{e}; set aws_profile in config.toml to a profile in ~/.aws/config") from e
+            raise ConfigError(
+                f"{e}; set [aws_profiles] {account.name} in config.toml to a profile in ~/.aws/config"
+            ) from e
 
     def client(self, name, **kwargs):
         return self.session.client(name, **kwargs)
