@@ -13,7 +13,8 @@
   `<user>-<env>` (section 23), implemented in barn and the demo platform and
   folded into sections 2–12. Sandbox verification status: section 23.10.
 - **Next (not done):** move the user's setup to their laptop with the `zach`
-  admin user as source profile: **`MIGRATION-laptop.md`**.
+  admin user as source profile. The instructions are in
+  `MIGRATION-laptop.md`, which is kept out of git; the user brings it.
 - **Source of truth:** this file. `docs/design-log.md` is the verbatim interview
   history with question numbers (Q1–Q47); some of its entries are superseded.
   Use it only to understand *why*. Where they disagree, this file wins.
@@ -954,4 +955,5 @@ Sandbox (123456789012), all as specified:
 
 ## 24. Laptop migration (planned 2026-11-02)
 
-Instructions for the agent on the user's laptop: `MIGRATION-laptop.md`.
+Instructions for the agent on the user's laptop: `MIGRATION-laptop.md`. It is
+kept out of git (excluded locally); the user brings it to the laptop.
