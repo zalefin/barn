@@ -5,7 +5,7 @@ minor release (0.x.0) may change the CLI or the files in `~/.config/barn/`;
 when it changes the files, barn migrates them automatically on first run
 (README: [Versions](README.md#versions)). Releases are git tags `vX.Y.Z`.
 
-## 0.6.0 (unreleased)
+## 0.6.0 (2026-11-03)
 
 - **Startup script.** What a box installs at first boot (apt packages,
   Docker, Neovim, kiro-cli, claude, herdr, uv) is now barn's default startup
