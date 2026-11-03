@@ -15,6 +15,8 @@
 - **2026-11-02:** the user's setup moved to their laptop, with the `zach`
   admin user as source profile (section 24). This file moved from the repo
   root to `docs/plans/PLAN.md`.
+- **2026-11-03:** what a box installs at first boot is a startup script,
+  barn's default or the user's own (section 30).
 - **Source of truth:** this file. `docs/design-log.md` is the verbatim interview
   history with question numbers (Q1–Q47); some of its entries are superseded.
   Use it only to understand *why*. Where they disagree, this file wins.
@@ -274,18 +276,24 @@ idempotent against an existing home volume. Order matters:
    a host-key-changed warning.
 5. `loginctl enable-linger <user>` (required so herdr's server survives SSH
    logout).
-6. apt: `git build-essential jq ripgrep unzip unar python3 rsync`; Docker (official
-   Docker apt repo) with the user in the `docker` group; Neovim, the latest
-   stable release from GitHub (Ubuntu's is too old for most configs).
-7. **As the user**, run the four vendor installers unpinned (they install into
-   `~/.local`, which lives on the home volume):
-   ```
-   curl -fsSL https://cli.kiro.dev/install | bash
-   curl -fsSL https://claude.ai/install.sh | bash
-   curl -fsSL https://herdr.dev/install.sh | bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   ```
-8. Install `idle-check.sh` and its systemd service and timer (section 10).
+6. Docker's config, for whichever startup script installs Docker: data-root
+   at `~/.barn/docker` on the home volume, and the service waits for the home
+   mount.
+7. Install `idle-check.sh` and its systemd service and timer (section 10).
+8. **The startup script** (section 30), as root: `startup_script` from
+   `config.toml`, or barn's default (`bootstrap/startup-default.sh`, always
+   installed at `/usr/local/lib/barn/startup-default.sh`). The default:
+   - apt: `git build-essential jq ripgrep unzip unar python3 rsync`; Docker (official
+     Docker apt repo) with the user in the `docker` group; Neovim, the latest
+     stable release from GitHub (Ubuntu's is too old for most configs).
+   - **As the user**, the four vendor installers unpinned (they install into
+     `~/.local`, which lives on the home volume):
+     ```
+     curl -fsSL https://cli.kiro.dev/install | bash
+     curl -fsSL https://claude.ai/install.sh | bash
+     curl -fsSL https://herdr.dev/install.sh | bash
+     curl -LsSf https://astral.sh/uv/install.sh | sh
+     ```
 9. Write a completion marker `/var/lib/barn/bootstrap-done` with a
    timestamp. `doctor` reads it; on failure the CLI fetches the boot log with
    `ec2:GetConsoleOutput`.
@@ -418,6 +426,7 @@ passwordless_sudo = true
 idle_hours = 4
 volume_gb = 100
 shared_home = ""                  # optional team defaults dir, synced first
+startup_script = "startup.sh"     # optional: first-boot script (section 30); none = barn's default
 guest_keys = []                   # optional: public keys authorized on boxes you create
 
 [aws_profiles]                    # one AWS CLI profile per account file
@@ -1085,3 +1094,40 @@ One person can use barn in several AWS accounts at once.
   credential-looking names, 755 for `#!` scripts, else 644.
 - Not verified on a real Windows machine from here; CI on `windows-latest`
   is the check, plus a first manual `init`/`connect`/`ssh`/`sync` there.
+
+## 30. Startup script (2026-11-03)
+
+User decisions: what a box installs is a script the user can replace, with a
+default; the default keeps everything first boot installed before (apt
+packages, Docker, Neovim, kiro-cli, claude, herdr, uv); it is replaced, not
+extended, but stays on the box so a script can run it and add to it; one
+script in `config.toml` for every box; it runs at first boot of each instance.
+
+- `startup_script` in `config.toml`: a path, `~` expanded, relative to the barn
+  home. None means barn's default. `barn init` writes `startup.sh` (from
+  `templates/startup.sh`: one line, `bash /usr/local/lib/barn/startup-default.sh`,
+  then commented examples) and the template config points at it. The 0.6.0
+  migration does the same for older configs (an existing `startup.sh` is
+  kept; a config that has the key is left alone), so they keep the same tools
+  and have a place to add more. After that a config without the key chose
+  barn's default; `init` does not ask for it.
+- `create` reads the file before changing anything (`read_startup_script`):
+  it must exist, be non-empty UTF-8 (CRLF made LF), have no line
+  `BARN_STARTUP_SCRIPT` (the heredoc delimiter that carries it in user data),
+  and be at most 5000 bytes gzipped. EC2 takes 16 KB of gzipped user data;
+  barn's own part with the default is about 9 KB.
+- It goes to Terraform as `startup_script` (the text; "" = default), so
+  editing it replaces the instance on the next `create`, like
+  `passwordless_sudo`. First boot writes it to `/usr/local/lib/barn/startup.sh`
+  and runs it (or the default) as root with `BARN_USER` and `BARN_WARNINGS`
+  (a file whose lines become bootstrap warnings), last before the marker, so a
+  failing script still leaves a reachable box that idle-stops. A non-zero exit
+  is a warning, not a failed bootstrap. Docker's config (data-root, mount
+  wait) stays in the fixed part, so any Docker install keeps data on the home
+  volume.
+- First boot records `/var/lib/barn/startup` (`default` or `custom`); the
+  default touches `/var/lib/barn/startup-default` when it runs. `doctor`
+  requires the default's tools (and checks Docker, the claude and kiro tokens
+  and sign-in) only where the default ran, else only for tools that are on
+  PATH. It compares the box's `startup.sh` (SHA-256) with the local file and
+  warns when they differ: the next `create` replaces the instance.

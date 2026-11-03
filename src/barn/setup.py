@@ -20,6 +20,7 @@ from .config import (
     account_names,
     check_account_name,
     default_user,
+    home_path,
     placeholders,
 )
 from .migrate import installed, migrate
@@ -83,6 +84,9 @@ def scaffold(home, account=None, aws_profile=None, account_file=None):
         done.append((acct, "copied" if account_file else "created", f"from {short(account_file)}" if account_file else ""))
     else:
         done.append((acct, "kept", ""))
+
+    startup = home / "startup.sh"
+    done.append((startup, "created" if _write_new(startup, (TEMPLATES / "startup.sh").read_text(encoding="utf-8"), 0o755) else "kept", ""))
 
     env = home / "home" / ".barn" / "env"
     env.parent.mkdir(parents=True, exist_ok=True)
@@ -162,6 +166,12 @@ def todo(home):
             items.append((True, config, f'add `{name} = "<profile>"` under [aws_profiles]'))
         elif profile != PLACEHOLDER and profile not in known:
             items.append((True, Path("~/.aws/config"), f"add profile {profile!r} (or change aws_profiles.{name})"))
+
+    script = settings.get("startup_script", "")
+    if isinstance(script, str) and script:
+        path = home_path(home, script)
+        if not path.is_file():
+            items.append((True, path, "missing; write it (or remove startup_script from config.toml for barn's default)"))
 
     guests = settings.get("guest_keys", {})
     for name in sorted(guests if isinstance(guests, dict) else {}):

@@ -3,11 +3,14 @@ files (accounts/<name>.toml). See docs/account-prerequisites.md."""
 
 import dataclasses
 import getpass
+import gzip
 import os
 import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from . import compat
 
 # The login user on every box: Ubuntu's default user (UID 1000, from cloud-init).
 BOX_USER = "ubuntu"
@@ -63,6 +66,8 @@ class Settings:
     idle_hours: float = 4
     volume_gb: int = 100
     shared_home: str = ""
+    # What new boxes run at first boot, as root; relative to the barn home. Empty: barn's default.
+    startup_script: str = ""
     # {account name: [public keys]}: who else may SSH into boxes you create there.
     guest_keys: dict = field(default_factory=dict)
 
@@ -79,6 +84,9 @@ class Settings:
     def shared_home_path(self):
         return Path(self.shared_home).expanduser() if self.shared_home else None
 
+    def startup_script_path(self, home):
+        return home_path(home, self.startup_script) if self.startup_script else None
+
     def aws_profile(self, account):
         profile = self.aws_profiles.get(account)
         if not profile:
@@ -87,6 +95,44 @@ class Settings:
                 "under [aws_profiles] in config.toml"
             )
         return profile
+
+
+def home_path(home, value):
+    """A path from config.toml: ~ expanded, relative to the barn home."""
+    p = Path(value).expanduser()
+    return p if p.is_absolute() else home / p
+
+
+# The heredoc delimiter that carries the startup script in user data.
+STARTUP_DELIMITER = "BARN_STARTUP_SCRIPT"
+# EC2 takes 16 KB of (gzipped) user data; barn's own part is about 10 KB of it.
+STARTUP_MAX_GZIPPED = 5000
+
+
+def read_startup_script(settings, home):
+    """The startup_script file's text for the instance's user data, or "" for
+    barn's default. LF line endings: bash runs it on the box."""
+    path = settings.startup_script_path(home)
+    if path is None:
+        return ""
+    where = f"startup_script {path}"
+    if not path.is_file():
+        raise ConfigError(f"{where}: no such file (remove startup_script from config.toml for barn's default)")
+    try:
+        text = compat.lf(path.read_bytes()).decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ConfigError(f"{where}: not UTF-8 ({e})") from None
+    if not text.strip():
+        raise ConfigError(f"{where}: empty (remove startup_script from config.toml for barn's default)")
+    if STARTUP_DELIMITER in text.splitlines():
+        raise ConfigError(f"{where}: has a line {STARTUP_DELIMITER}, which barn uses to embed it")
+    size = len(gzip.compress(text.encode("utf-8")))
+    if size > STARTUP_MAX_GZIPPED:
+        raise ConfigError(
+            f"{where}: too big for EC2 user data ({size} bytes gzipped, at most {STARTUP_MAX_GZIPPED}); "
+            "have it download and run a longer script instead"
+        )
+    return text
 
 
 def placeholders(data):

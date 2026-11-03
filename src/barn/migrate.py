@@ -20,12 +20,14 @@ import re
 import shutil
 import tomllib
 from importlib.metadata import version as dist_version
+from pathlib import Path
 
 from . import compat, ui
 from .config import ConfigError
 
 KEY = "config_version"
 PRE_VERSIONING = "0.1.0"
+TEMPLATES = Path(__file__).parent / "templates"
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
 # [(version tuple, version, function)], in version order. function(home, text)
@@ -126,6 +128,22 @@ def set_key(text, key, value, comment=""):
     return "".join(lines)
 
 
+def add_key(text, key, value, comment=""):
+    """Add a top-level string key after the last top-level key, so it stays
+    above the comments that introduce the first table. A key already there is
+    left alone."""
+    lines = text.splitlines(keepends=True)
+    if _find(lines, key) is not None:
+        return text
+    line = f"{key} = {json.dumps(value)}" + (f"  # {comment}" if comment else "") + "\n"
+    end = _top_level(lines)
+    at = next((i + 1 for i in range(end - 1, -1, -1) if lines[i].strip() and not lines[i].lstrip().startswith("#")), 0)
+    if at and not lines[at - 1].endswith("\n"):
+        lines[at - 1] += "\n"
+    lines.insert(at, line)
+    return "".join(lines)
+
+
 def add_table_entries(text, table, entries):
     """Add string entries to [table], creating it at the end of the file. Keys
     the table already has are left alone."""
@@ -201,6 +219,25 @@ def guest_keys_per_account(home, text):
         entry = re.sub(r"^(\s*)guest_keys(\s*=)", rf"\g<1>{account}\g<2>", source, count=1)
         text = add_table_source(text, "guest_keys", entry)
     return text, [f"guest_keys → [guest_keys] {account} ({len(keys)} key{'s' * (len(keys) != 1)})"]
+
+
+@migration("0.6.0")
+def startup_script(home, text):
+    """What a box installs became a startup script. A config from before gets
+    the `barn init` starter, startup.sh, which runs barn's default: the same
+    tools as before, now with a place to add more. An existing startup.sh is
+    kept."""
+    if "startup_script" in tomllib.loads(text):
+        return text, []
+    notes = []
+    script = home / "startup.sh"
+    if not script.exists():
+        compat.write_text(script, (TEMPLATES / "startup.sh").read_text(encoding="utf-8"))
+        script.chmod(0o755)
+        notes.append("wrote startup.sh: barn's default tools; add yours there")
+    text = add_key(text, "startup_script", "startup.sh", "what new boxes install at first boot; remove for barn's default")
+    notes.append('startup_script = "startup.sh"')
+    return text, notes
 
 
 # --- running them ---

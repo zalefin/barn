@@ -17,7 +17,17 @@ from rich.table import Table
 
 from . import compat, pricing, ssh, ui
 from .aws import Aws
-from .config import BOX_USER, ConfigError, account_names, app_home, check_name, load_account, load_settings
+from .config import (
+    BOX_USER,
+    ConfigError,
+    account_names,
+    app_home,
+    check_name,
+    load_account,
+    load_settings,
+    read_startup_script,
+)
+from .sync import short
 from .tf import Terraform, TerraformError, install_roots
 
 MARKER = "/var/lib/barn/bootstrap-done"
@@ -196,7 +206,7 @@ def volume_vars(ctx, name, subnet_id):
     }
 
 
-def instance_vars(ctx, name, vol, instance_type):
+def instance_vars(ctx, name, vol, instance_type, startup_script=""):
     s, a = ctx.settings, ctx.account
     return {
         "region": a.region,
@@ -205,6 +215,7 @@ def instance_vars(ctx, name, vol, instance_type):
         "ssh_public_key": s.public_key_path.read_text(encoding="utf-8").strip(),
         "passwordless_sudo": s.passwordless_sudo,
         "idle_hours": s.idle_hours,
+        "startup_script": startup_script,
         "instance_type": instance_type,
         "volume_id": vol["volume_id"],
         "subnet_id": vol["subnet_id"],
@@ -266,6 +277,8 @@ def apply(tf, variables, s):
 
 def create(ctx, name, size=None):
     name = check_name(name)
+    # Before anything changes: a bad script would otherwise fail after the volume.
+    startup = read_startup_script(ctx.settings, ctx.home)
     with ui.step("Reading state"):
         check_owner(ctx, name, "create", hint="pick another name")
         vol_tf = ctx.tf(name, "volume")
@@ -274,6 +287,8 @@ def create(ctx, name, size=None):
         current = ctx.find_instance(name)
     size = size or (current or {}).get("InstanceType") or ctx.settings.default_size
     ui.header(name, size, ctx.account.region, f"account {ctx.account.name}")
+    script = ctx.settings.startup_script_path(ctx.home)
+    ui.info("startup script", short(script) if script else "barn's default")
 
     subnet = vol.get("subnet_id") or ctx.account.subnet_ids[0]
     existed = bool(vol)
@@ -284,7 +299,7 @@ def create(ctx, name, size=None):
         s.result = " · ".join(p for p in (vol["volume_id"], vol["availability_zone"], s.result) if p)
 
     with ui.step("Instance") as s:
-        apply(inst_tf, instance_vars(ctx, name, vol, size), s)
+        apply(inst_tf, instance_vars(ctx, name, vol, size, startup), s)
         instance_id = inst_tf.outputs()["instance_id"]
         s.result = " · ".join(p for p in (instance_id, s.result) if p)
 

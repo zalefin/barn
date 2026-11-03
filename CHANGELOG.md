@@ -5,6 +5,25 @@ minor release (0.x.0) may change the CLI or the files in `~/.config/barn/`;
 when it changes the files, barn migrates them automatically on first run
 (README: [Versions](README.md#versions)). Releases are git tags `vX.Y.Z`.
 
+## 0.6.0 (unreleased)
+
+- **Startup script.** What a box installs at first boot (apt packages,
+  Docker, Neovim, kiro-cli, claude, herdr, uv) is now barn's default startup
+  script, and `startup_script` in `config.toml` can name your own instead. It
+  runs as root after barn's own setup; the default is on every box at
+  `/usr/local/lib/barn/startup-default.sh`, so your script can run it and add
+  to it. `barn init` writes a starter `startup.sh` that does just that and
+  points `startup_script` at it (README: [Startup script](README.md#startup-script)).
+  Editing the script replaces the instance on the next `create` (the home
+  volume is kept); `doctor` says when a box ran an older version, and checks
+  the default's tools only where the default ran.
+- **Migration:** on first run, barn writes the starter `startup.sh` into
+  `~/.config/barn/` (an existing one is kept) and adds
+  `startup_script = "startup.sh"` to `config.toml`, so boxes get the same
+  tools as before. Remove the key for barn's default without a file.
+- First boot changed, so the next `create` of an existing box replaces its
+  instance (the home volume is kept).
+
 ## 0.5.2 (2026-11-03)
 
 - **`list` no longer warns when the role lacks `pricing:GetProducts`.** The

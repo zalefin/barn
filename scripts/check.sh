@@ -25,5 +25,5 @@ print(text)
 PY
 # shellcheck from PATH, or the shellcheck-py wheel through uvx (nothing installed).
 if command -v shellcheck >/dev/null; then sc=(shellcheck); else sc=(uvx --from shellcheck-py shellcheck); fi
-"${sc[@]}" -s bash "$rendered" "$pkg/bootstrap/idle-check.sh"
+"${sc[@]}" -s bash "$rendered" "$pkg/bootstrap/idle-check.sh" "$pkg/bootstrap/startup-default.sh" "$pkg/templates/startup.sh"
 echo "all checks passed"

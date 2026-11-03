@@ -28,6 +28,12 @@ variable "passwordless_sudo" {
   default     = true
 }
 
+variable "startup_script" {
+  description = "What first boot runs after barn's own setup, as root; empty runs barn's default (bootstrap/startup-default.sh). Changing it replaces the instance."
+  type        = string
+  default     = ""
+}
+
 variable "idle_hours" {
   type    = number
   default = 4

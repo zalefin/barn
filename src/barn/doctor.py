@@ -1,5 +1,6 @@
 """`doctor <name>` (docs/plans/PLAN.md section 12). Each check prints pass, warn, or fail."""
 
+import hashlib
 import re
 import subprocess
 
@@ -7,8 +8,8 @@ from botocore.config import Config
 
 from . import ssh, ui
 from .cli import FAILED, MARKER, show_console, ssm_online, write_ssh_entry
-from .config import check_name
-from .sync import sources
+from .config import ConfigError, check_name, read_startup_script
+from .sync import short, sources
 
 PASS, WARN, FAIL = "pass", "warn", "fail"
 # Paths on the laptop that mean nothing on the box: WSL's /mnt/c/..., Windows' C:\... or C:/Users/...
@@ -21,6 +22,22 @@ if [ -f MARKER ]; then say pass "bootstrap marker" "$(head -1 MARKER)"
   grep '^warning:' MARKER | while read -r w; do say warn "bootstrap" "$w"; done
 elif [ -f FAILED ]; then say fail "bootstrap marker" "failed: $(cat FAILED)"
 else say fail "bootstrap marker" "missing (still running?)"; fi
+
+# Which startup script first boot ran; the default's tools are expected only where it ran.
+startup=$(cat /var/lib/barn/startup 2>/dev/null || echo default)
+strict=; { [ "$startup" = default ] || [ -f /var/lib/barn/startup-default ]; } && strict=1
+have=default; ran="barn's default"
+if [ "$startup" = custom ]; then
+  have=$(sha256sum /usr/local/lib/barn/startup.sh 2>/dev/null | cut -d' ' -f1)
+  ran="yours"; [ -n "$strict" ] && ran="yours, which runs barn's default"
+fi
+case STARTUPSHA in
+  unknown) ;;
+  "$have") say pass "startup script" "$ran" ;;
+  default) say warn "startup script" "the box ran its own; config.toml now has none, so \`barn create BOXNAME\` replaces the instance" ;;
+  *) if [ "$startup" = default ]; then say warn "startup script" "the box ran barn's default; \`barn create BOXNAME\` replaces the instance to run STARTUPPATH"
+     else say warn "startup script" "the box ran an older STARTUPPATH; \`barn create BOXNAME\` replaces the instance to run it"; fi ;;
+esac
 
 if [ "$(hostname)" = BOXNAME ]; then say pass "hostname" "$(hostname)"
 else say warn "hostname" "$(hostname), expected BOXNAME; \`barn create\` sets it"; fi
@@ -37,17 +54,22 @@ done
 if curl -sS -o /dev/null --max-time 10 https://gitlab.com 2>/dev/null; then say pass "reach gitlab.com" ""
 else say warn "reach gitlab.com" "unreachable (not needed in v1)"; fi
 
+# has TOOL: on PATH in a login shell. A startup script of your own may leave tools out.
+has() { bash -lc "command -v $1" >/dev/null 2>&1; }
 for tool in kiro-cli claude herdr uv git docker nvim; do
   p=$(bash -lc "command -v $tool" 2>/dev/null)
-  if [ -n "$p" ]; then say pass "on PATH: $tool" "$p"; else say fail "on PATH: $tool" "not found in a login shell"; fi
+  if [ -n "$p" ]; then say pass "on PATH: $tool" "$p"
+  elif [ -n "$strict" ]; then say fail "on PATH: $tool" "not found in a login shell"; fi
 done
-if id -nG | grep -qw docker; then say pass "docker group" ""; else say warn "docker group" "user not in docker group"; fi
-root=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null)
-case "$root" in
-  "$HOME"/*) say pass "docker data on home volume" "$root" ;;
-  "") say fail "docker data on home volume" "docker info failed" ;;
-  *) say warn "docker data on home volume" "$root (lost on destroy)" ;;
-esac
+if [ -n "$strict" ] || has docker; then
+  if id -nG | grep -qw docker; then say pass "docker group" ""; else say warn "docker group" "user not in docker group"; fi
+  root=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null)
+  case "$root" in
+    "$HOME"/*) say pass "docker data on home volume" "$root" ;;
+    "") say fail "docker data on home volume" "docker info failed" ;;
+    *) say warn "docker data on home volume" "$root (lost on destroy)" ;;
+  esac
+fi
 
 if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" = yes ]; then say pass "linger" "enabled"
 else say fail "linger" "disabled; herdr will die on logout"; fi
@@ -58,16 +80,20 @@ if systemctl is-active --quiet idle-check.timer; then say pass "idle-check timer
 else say fail "idle-check timer" "not active"; fi
 
 [ -f ~/.barn/env ] && . ~/.barn/env
-if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then say pass "claude token" "CLAUDE_CODE_OAUTH_TOKEN set"
-elif [ -s ~/.claude/.credentials.json ]; then say pass "claude token" "~/.claude/.credentials.json"
-else say warn "claude token" "none; set CLAUDE_CODE_OAUTH_TOKEN in SYNCDIR/.barn/env and sync"; fi
-if [ -n "${KIRO_API_KEY:-}" ]; then say pass "kiro token" "KIRO_API_KEY set"
-elif [ -s ~/.local/share/kiro-cli/data.sqlite3 ]; then say pass "kiro token" "data.sqlite3"
-else say warn "kiro token" "none; set KIRO_API_KEY in SYNCDIR/.barn/env and sync"; fi
-if out=$(timeout 30 bash -lc 'claude auth status' 2>&1); then say pass "claude signed in" "$(echo "$out" | jq -r .authMethod 2>/dev/null)"
-else say fail "claude signed in" "claude auth status: not logged in"; fi
-if out=$(timeout 30 bash -lc 'kiro-cli whoami' 2>&1); then say pass "kiro signed in" "$(echo "$out" | head -1 | head -c 80)"
-else say fail "kiro signed in" "$(echo "$out" | tail -1 | head -c 120)"; fi
+if [ -n "$strict" ] || has claude; then
+  if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then say pass "claude token" "CLAUDE_CODE_OAUTH_TOKEN set"
+  elif [ -s ~/.claude/.credentials.json ]; then say pass "claude token" "~/.claude/.credentials.json"
+  else say warn "claude token" "none; set CLAUDE_CODE_OAUTH_TOKEN in SYNCDIR/.barn/env and sync"; fi
+  if out=$(timeout 30 bash -lc 'claude auth status' 2>&1); then say pass "claude signed in" "$(echo "$out" | jq -r .authMethod 2>/dev/null)"
+  else say fail "claude signed in" "claude auth status: not logged in"; fi
+fi
+if [ -n "$strict" ] || has kiro-cli; then
+  if [ -n "${KIRO_API_KEY:-}" ]; then say pass "kiro token" "KIRO_API_KEY set"
+  elif [ -s ~/.local/share/kiro-cli/data.sqlite3 ]; then say pass "kiro token" "data.sqlite3"
+  else say warn "kiro token" "none; set KIRO_API_KEY in SYNCDIR/.barn/env and sync"; fi
+  if out=$(timeout 30 bash -lc 'kiro-cli whoami' 2>&1); then say pass "kiro signed in" "$(echo "$out" | head -1 | head -c 80)"
+  else say fail "kiro signed in" "$(echo "$out" | tail -1 | head -c 120)"; fi
+fi
 """
 
 # Run with a tty: idle signal 3 needs SSH-over-SSM logins in logind with a tty.
@@ -161,6 +187,15 @@ def simulate_checks(ctx):
     return results
 
 
+def startup_sha(text):
+    """What the box's /usr/local/lib/barn/startup.sh hashes to if it ran this
+    startup script (first boot writes it with a trailing newline): "default"
+    for barn's default, "unknown" when the local file is unreadable."""
+    if text is None:
+        return "unknown"
+    return hashlib.sha256(f"{text}\n".encode("utf-8")).hexdigest() if text else "default"
+
+
 def laptop_path_refs(ctx):
     hits = []
     for d in sources(ctx):
@@ -238,8 +273,15 @@ def doctor(ctx, name):
         return summarize(results)
 
     alias = name
+    try:
+        startup = read_startup_script(ctx.settings, ctx.home)
+        startup_error = ""
+    except ConfigError as e:
+        startup, startup_error = None, str(e)
     script = (
-        REMOTE.replace("FAILED", FAILED)
+        REMOTE.replace("STARTUPSHA", startup_sha(startup))
+        .replace("STARTUPPATH", short(ctx.settings.startup_script_path(ctx.home) or ""))
+        .replace("FAILED", FAILED)
         .replace("MARKER", MARKER)
         .replace("REGION", ctx.account.region)
         .replace("SYNCDIR", str(ctx.home / "home"))
@@ -269,6 +311,8 @@ def doctor(ctx, name):
                 show_console(ctx, iid)
 
     section("Local")
+    if startup_error:
+        add(WARN, "startup script", startup_error)
     hits = laptop_path_refs(ctx)
     add(WARN if hits else PASS, "no laptop paths (/mnt/c, C:\\) in synced files", ", ".join(hits))
 

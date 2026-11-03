@@ -59,7 +59,8 @@ their own access keys, or SSO users, whose profiles assume the role
   `security.ubuntu.com`, over HTTP), the Snap Store (SSM agent refresh),
   `download.docker.com`, `github.com` (Neovim), and the installers at
   `cli.kiro.dev`, `claude.ai`, `herdr.dev` and `astral.sh`, which download
-  from further hosts (GitHub release storage among them). Allowlisting hosts is not supported yet:
+  from further hosts (GitHub release storage among them); plus whatever a
+  user's own startup script installs. Allowlisting hosts is not supported yet:
   allow HTTP/HTTPS egress.
 - At run time: whatever your agents call (Anthropic, Kiro, git hosts, ...)
 

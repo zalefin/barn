@@ -82,6 +82,41 @@ def test_0_3_0_scopes_guest_keys_to_the_default_account(home):
     assert "guest_keys" not in tomllib.loads((home / "config.toml").read_text())
 
 
+def test_0_6_0_gives_an_old_config_the_starter_startup_script(home):
+    before = """\
+config_version = "0.5.2"
+default_account = "sandbox"
+volume_gb = 100
+# shared_home = "~/src/team-dotfiles/home"
+
+# Tables last: every key below a [table] line belongs to that table.
+
+[aws_profiles]
+sandbox = "barn-zach-manager"
+"""
+    (home / "config.toml").write_text(before)
+    assert m.migrate(home, home / "config.toml", now="0.6.0") == ["0.6.0"]
+    text = (home / "config.toml").read_text()
+    assert tomllib.loads(text)["startup_script"] == "startup.sh"
+    # After the last top-level key, above the comments that introduce the tables.
+    assert text.index("volume_gb") < text.index("startup_script") < text.index("# shared_home")
+    assert tomllib.loads(text)["aws_profiles"] == {"sandbox": "barn-zach-manager"}
+    # The same starter `barn init` writes: barn's default, so boxes get what they got before.
+    starter = (home / "startup.sh").read_text()
+    assert starter == (m.TEMPLATES / "startup.sh").read_text()
+    assert "bash /usr/local/lib/barn/startup-default.sh" in starter
+    assert m.migrate(home, home / "config.toml", now="0.6.0") == []
+
+    # An existing startup.sh is kept; a config that already names a script is left alone.
+    (home / "startup.sh").write_text("mine\n")
+    (home / "config.toml").write_text(before)
+    m.migrate(home, home / "config.toml", now="0.6.0")
+    assert (home / "startup.sh").read_text() == "mine\n"
+    (home / "config.toml").write_text(before.replace("volume_gb = 100", 'startup_script = ""'))
+    m.migrate(home, home / "config.toml", now="0.6.0")
+    assert tomllib.loads((home / "config.toml").read_text())["startup_script"] == ""
+
+
 def test_load_settings_migrates_automatically(home, capsys):
     s = load_settings(home)
     assert s.default_account == "sandbox" and s.aws_profile("sandbox") == "barn-zach-manager"
@@ -137,6 +172,9 @@ def test_text_helpers():
     assert tomllib.loads(m.add_table_entries(text, "t", {"x": "y", "a": "no"}))["t"] == {"a": "table", "x": "y"}
     assert tomllib.loads(m.add_table_entries(text, "u", {"k": "v"}))["u"] == {"k": "v"}
     assert m.set_key(text, "v", "1.0.0").startswith('# c\nv = "1.0.0"\na = "1"')
+    assert m.add_key(text, "z", "2") == '# c\na = "1"  # keep\nz = "2"\n\n[t]\na = "table"\n'
+    assert m.add_key(text, "a", "2") == text
+    assert m.add_key("# only a comment\n", "z", "2") == 'z = "2"\n# only a comment\n'
     multi = 'k = [\n  "x",  # one\n]\nb = 2\n'
     assert m.pop_key(multi, "k") == ("b = 2\n", 'k = [\n  "x",  # one\n]\n')
     assert m.pop_key(multi, "missing") == (multi, None)

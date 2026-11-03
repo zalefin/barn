@@ -78,7 +78,9 @@ the same name.
 `user` (default `$USER`) goes into the `barn:owner` tag of boxes you create. On the box everyone logs in as `ubuntu`
 (UID 1000, the same UID most container images use).
 
-Put your tokens and personal config in `~/.config/barn/home/` (see
+`startup.sh` says what new boxes install at first boot
+([Startup script](#startup-script)); as `barn init` writes it, that is barn's
+default set of tools. Put your tokens and personal config in `~/.config/barn/home/` (see
 [Sync](#sync)). The short version is a `home/.barn/env` file
 containing `export CLAUDE_CODE_OAUTH_TOKEN=...` and `export KIRO_API_KEY=...`.
 
@@ -201,6 +203,46 @@ keeps the mode. Other things worth syncing:
 `.gitconfig`, `.config/herdr/config.toml`. Never sync the rest of
 `~/.local/share/kiro-cli/` (about 200 MB of bundled runtimes).
 
+## Startup script
+
+The first boot of each instance (on `create`, and again after
+`destroy`/`create`) runs a startup script as root, after barn's own setup
+(SSM, home volume, user, SSH keys, idle stop). barn's default installs:
+
+- apt packages: `git build-essential jq ripgrep unzip unar python3 rsync curl`
+- Docker (its data on the home volume, see [What lives where](#what-lives-where)), with `ubuntu` in the `docker` group
+- Neovim, the latest stable release
+- `kiro-cli`, `claude`, `herdr` and `uv`, unpinned, into `~/.local`
+
+`startup_script` in `config.toml` names your own script instead, relative to
+the barn home or absolute; without it a box gets the default. `barn init`
+writes `startup.sh` and points `startup_script` at it (upgrading from 0.5
+does the same for your existing `config.toml`). Its one command runs
+the default, which every box has at
+`/usr/local/lib/barn/startup-default.sh`, so you can add to it:
+
+```bash
+bash /usr/local/lib/barn/startup-default.sh   # delete to pick your own tools
+apt-get install -y -q postgresql-client
+sudo -u "$BARN_USER" -H bash -lc 'curl -fsSL https://bun.sh/install | bash' \
+  || echo "bun install failed" >> "$BARN_WARNINGS"
+```
+
+- Install into the home directory as `$BARN_USER` (`ubuntu`), as above.
+- A line appended to `$BARN_WARNINGS`, or a non-zero exit, shows as a warning
+  in `create` and `doctor`. The output is in `/var/log/barn-bootstrap.log` on
+  the box.
+- Keep it safe to rerun: a recreated box's home volume already has the tools
+  in `~/.local`.
+- It goes into the instance's user data (at most about 5 KB gzipped), which
+  anyone on the box can read: no secrets, those go in `home/.barn/env`. For
+  more, have it download and run a longer script.
+- `create` waits up to 25 minutes for first boot.
+- Editing the script changes the user data, so the next `barn create <name>`
+  **replaces the instance**, keeping the home volume; existing boxes keep what
+  they have until then. `doctor` says when a box ran an older version.
+- `doctor` expects the default's tools only on boxes where the default ran.
+
 ## Idle stop
 
 Every 5 minutes, a timer on the box checks whether it is in use:
@@ -222,6 +264,7 @@ On your laptop, in `~/.config/barn/`:
 | Path | What |
 |---|---|
 | `config.toml` | Your settings, `default_account` and one AWS profile per account. |
+| `startup.sh` | What new boxes install at first boot (`startup_script`). |
 | `accounts/<name>.toml` | Where an account's prerequisites are ([docs](docs/account-prerequisites.md)), one file per account. |
 | `home/` | Synced onto your boxes. |
 | `terraform/`, `bootstrap/` | Managed: refreshed from the installed package on every run, so Terraform always runs here. Don't edit. |
@@ -231,9 +274,10 @@ On the box:
 
 - `~` is a separate encrypted EBS volume, so it survives
   `destroy`/`create`. There are **no backups**: push your work.
-- Tools (`claude`, `kiro-cli`, `herdr`, `uv`) are installed unpinned into
-  `~/.local` on first boot of each box. apt packages and the Docker engine
-  live on the disposable root disk.
+- The [startup script](#startup-script) runs on first boot of each box. With
+  the default, `claude`, `kiro-cli`, `herdr` and `uv` are installed unpinned
+  into `~/.local`; apt packages, Neovim and the Docker engine live on the
+  disposable root disk.
 - Docker's data (images, containers, named volumes) lives on the home volume
   at `~/.barn/docker`, so a project's compose stack comes back after
   `destroy`/`create` without re-pulling or re-initializing.

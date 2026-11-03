@@ -7,6 +7,7 @@ default_size = "m7i.xlarge"       # 4 vCPU, 16 GiB
 passwordless_sudo = true
 idle_hours = 4
 volume_gb = 100
+startup_script = "startup.sh"     # what new boxes install at first boot (path relative to the barn home); remove for barn's default
 # shared_home = "~/src/team-dotfiles/home"   # optional team defaults, synced before home/
 
 # Tables last: every key below a [table] line belongs to that table.

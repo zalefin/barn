@@ -11,6 +11,7 @@ import pytest
 from barn import cli, ssh, sync, ui
 from barn.config import ConfigError, load_settings
 from barn.doctor import caller_role, is_manager
+from barn.migrate import installed
 from barn.tf import Terraform
 
 KEY_A = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAlice alice"
@@ -104,6 +105,7 @@ class FakeCtx(cli.Context):
             guest_keys={account: list(guest_keys)} if guest_keys else {},
             shared_home_path=None,
             default_size="m7i.xlarge",
+            startup_script_path=lambda home: None,
         )
         self.account = SimpleNamespace(region="us-east-1", name=account, manager_role_arn="")
         pricing_client = prices or FakePricing()
@@ -387,7 +389,7 @@ def test_box_commands_find_the_boxs_account(tmp_path, monkeypatch, capsys):
     (tmp_path / "accounts").mkdir()
     for name in ("bullpen", "expired", "sandbox", "work"):
         (tmp_path / "accounts" / f"{name}.toml").write_text("")
-    (tmp_path / "config.toml").write_text('config_version = "0.3.0"\ndefault_account = "sandbox"\nuser = "zach"\n')
+    (tmp_path / "config.toml").write_text(f'config_version = "{installed()}"\ndefault_account = "sandbox"\nuser = "zach"\n')
     ec2s = {
         "sandbox": FakeEc2([instance("zach-a2n", "zach", "i-1")], [volume("both", "zach")]),
         # A box whose instance is gone still has its home volume.

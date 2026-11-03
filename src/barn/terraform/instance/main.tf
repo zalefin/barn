@@ -33,6 +33,8 @@ locals {
     idle_service      = file("${path.module}/../../bootstrap/idle-check.service")
     idle_timer        = file("${path.module}/../../bootstrap/idle-check.timer")
     authorized_keys   = file("${path.module}/../../bootstrap/authorized_keys.py")
+    startup_default   = file("${path.module}/../../bootstrap/startup-default.sh")
+    startup_script    = var.startup_script
   })
 }
 

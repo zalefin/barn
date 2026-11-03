@@ -117,12 +117,13 @@ fi
 step "5 linger"
 loginctl enable-linger "$USER_NAME" || warn "enable-linger failed"
 
-# 6. Packages and Docker. Docker's data-root (images, containers, volumes) lives
-# on the home volume, so a project's compose stack survives destroy/create.
-# Classic graph drivers keep images under data-root too (the containerd image
-# store would put them in /var/lib/containerd, on the root disk). Docker waits
-# for the home mount, so it never writes into an empty /home/ubuntu after boot.
-step "6 packages"
+# 6. Docker's config, for whichever startup script installs it. Its data-root
+# (images, containers, volumes) lives on the home volume, so a project's compose
+# stack survives destroy/create. Classic graph drivers keep images under
+# data-root too (the containerd image store would put them in
+# /var/lib/containerd, on the root disk). Docker waits for the home mount, so it
+# never writes into an empty /home/ubuntu after boot.
+step "6 docker config"
 install -d -m 0710 -o root -g root "$HOME_DIR/.barn/docker"
 install -d -m 0755 /etc/docker /etc/systemd/system/docker.service.d
 cat > /etc/docker/daemon.json <<BARN_DOCKER
@@ -137,60 +138,9 @@ cat > /etc/systemd/system/docker.service.d/barn.conf <<BARN_DOCKER_UNIT
 RequiresMountsFor=$HOME_DIR
 BARN_DOCKER_UNIT
 systemctl daemon-reload
-export DEBIAN_FRONTEND=noninteractive
-apt_retry() { for _ in 1 2 3 4 5; do "$@" && return 0; sleep 10; done; return 1; }
-apt_retry apt-get update -q || warn "apt-get update failed"
-apt_retry apt-get install -y -q git build-essential jq ripgrep unzip unar python3 rsync ca-certificates curl \
-  || warn "apt packages failed"
-install -m 0755 -d /etc/apt/keyrings
-if curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; then
-  chmod a+r /etc/apt/keyrings/docker.asc
-  # shellcheck disable=SC1091
-  . /etc/os-release
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable" \
-    > /etc/apt/sources.list.d/docker.list
-  apt_retry apt-get update -q
-  apt_retry apt-get install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
-    || warn "docker install failed"
-  usermod -aG docker "$USER_NAME"
-else
-  warn "docker gpg key download failed"
-fi
-# Neovim: the latest stable release, as Ubuntu's package is too old for most
-# configs. On the root disk, so every new box gets the current release.
-NVIM_ARCH=$(uname -m | sed 's/aarch64/arm64/')
-install_nvim() {
-  curl -fsSL "https://github.com/neovim/neovim/releases/latest/download/nvim-linux-$NVIM_ARCH.tar.gz" -o /tmp/nvim.tar.gz \
-    && rm -rf /opt/nvim && mkdir -p /opt/nvim \
-    && tar -xzf /tmp/nvim.tar.gz -C /opt/nvim --strip-components=1 \
-    && ln -sf /opt/nvim/bin/nvim /usr/local/bin/nvim
-}
-apt_retry install_nvim || { warn "neovim release download failed; using Ubuntu's"; apt_retry apt-get install -y -q neovim; }
-rm -f /tmp/nvim.tar.gz
 
-# 7. Vendor installers, as the user, unpinned (they install into ~/.local, on the
-# home volume).
-step "7 vendor installers"
-# pipefail: a failed download must fail the install, not run an empty script.
-as_user() { sudo -u "$USER_NAME" -H bash -lc "set -o pipefail; $1" </dev/null; }
-# Three tries: a dropped connection mid-download is common enough.
-install_tool() {
-  for try in 1 2 3; do
-    as_user "$2" && return 0
-    step "$1 install failed (try $try)"
-    sleep 10
-  done
-  warn "$1 install failed"
-}
-# Kiro's installer prompts on /dev/tty over an existing install (as on a
-# recreated box, or a failed try); remove what it would remove after a "y".
-install_tool kiro-cli 'rm -f ~/.local/bin/kiro-cli ~/.local/bin/kiro-cli-chat; curl -fsSL https://cli.kiro.dev/install | bash'
-install_tool claude 'curl -fsSL https://claude.ai/install.sh | bash'
-install_tool herdr 'curl -fsSL https://herdr.dev/install.sh | bash'
-install_tool uv 'curl -LsSf https://astral.sh/uv/install.sh | sh'
-
-# 8. Idle stop (PLAN.md section 10).
-step "8 idle check"
+# 7. Idle stop (PLAN.md section 10).
+step "7 idle check"
 install -d -m 0755 /usr/local/lib/barn /etc/barn
 cat > /usr/local/lib/barn/idle-check.sh <<'BARN_IDLE_SH'
 ${idle_check_sh}
@@ -211,6 +161,35 @@ IDLE_HOURS=${idle_hours}
 BARN_IDLE_CONF
 systemctl daemon-reload
 systemctl enable --now idle-check.timer || warn "idle-check timer failed"
+
+# 8. The startup script: config.toml's startup_script, or barn's default (apt
+# packages, Docker, Neovim, kiro-cli, claude, herdr, uv). Last, as root, so a
+# failing or slow script still leaves a reachable box that idle-stops; its
+# failures are warnings. The default is always installed, for scripts that run
+# it and add to it. doctor reads $STATE_DIR/startup.
+step "8 startup script"
+cat > /usr/local/lib/barn/startup-default.sh <<'BARN_STARTUP_DEFAULT'
+${startup_default}
+BARN_STARTUP_DEFAULT
+cat > /usr/local/lib/barn/startup.sh <<'BARN_STARTUP_SCRIPT'
+${startup_script}
+BARN_STARTUP_SCRIPT
+chmod 0755 /usr/local/lib/barn/startup-default.sh /usr/local/lib/barn/startup.sh
+rm -f "$STATE_DIR/startup-default"
+if grep -q '[^[:space:]]' /usr/local/lib/barn/startup.sh; then
+  STARTUP=/usr/local/lib/barn/startup.sh
+  echo custom > "$STATE_DIR/startup"
+else
+  STARTUP=/usr/local/lib/barn/startup-default.sh
+  echo default > "$STATE_DIR/startup"
+fi
+: > "$STATE_DIR/startup-warnings"
+BARN_USER="$USER_NAME" BARN_WARNINGS="$STATE_DIR/startup-warnings" bash "$STARTUP" </dev/null
+rc=$?
+while IFS= read -r w; do
+  [ -n "$w" ] && WARNINGS+=("$w")
+done < "$STATE_DIR/startup-warnings"
+[ "$rc" = 0 ] || warn "startup script exited with $rc; see /var/log/barn-bootstrap.log"
 
 # 9. Completion marker; doctor reads it.
 step "9 done"

@@ -268,8 +268,11 @@ def test_init_scaffolds_without_overwriting(tmp_path, monkeypatch):
     assert [(p.relative_to(tmp_path).as_posix(), a) for p, a, _ in done] == [
         ("config.toml", "created"),
         ("accounts/default.toml", "created"),
+        ("startup.sh", "created"),
         ("home/.barn/env", "created"),
     ]
+    # The starter runs barn's default, and config.toml points at it.
+    assert "bash /usr/local/lib/barn/startup-default.sh" in (tmp_path / "startup.sh").read_text()
     if os.name != "nt":  # Windows has no Unix modes; sync gives it 600 on the box
         assert (tmp_path / "home" / ".barn" / "env").stat().st_mode & 0o777 == 0o600
     assert b"\r\n" not in (tmp_path / "home" / ".barn" / "env").read_bytes()  # sourced by bash on the box
@@ -279,6 +282,7 @@ def test_init_scaffolds_without_overwriting(tmp_path, monkeypatch):
 
     assert f'config_version = "{installed()}"' in config
     assert f'[aws_profiles]\ndefault = "{PLACEHOLDER}"' in config
+    assert 'startup_script = "startup.sh"' in config
 
     required = [what for needed, _, what in todo(tmp_path) if needed]
     assert any("aws_profiles.default" in w for w in required) and any("state_bucket" in w for w in required)
