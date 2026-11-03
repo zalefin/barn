@@ -5,7 +5,7 @@ minor release (0.x.0) may change the CLI or the files in `~/.config/barn/`;
 when it changes the files, barn migrates them automatically on first run
 (README: [Versions](README.md#versions)). Releases are git tags `vX.Y.Z`.
 
-## Unreleased
+## 0.5.1 (2026-11-03)
 
 - **`list` prices from AWS.** The COST column uses on-demand Linux prices and
   gp3 storage prices for each account's region, from the AWS Price List API
