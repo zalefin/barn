@@ -15,7 +15,7 @@ from rich import box
 from rich.prompt import Prompt
 from rich.table import Table
 
-from . import ssh, ui
+from . import compat, ssh, ui
 from .aws import Aws
 from .config import BOX_USER, ConfigError, account_names, app_home, check_name, load_account, load_settings
 from .tf import Terraform, TerraformError, install_roots
@@ -211,7 +211,7 @@ def instance_vars(ctx, name, vol, instance_type):
         "region": a.region,
         "user": s.user,
         "name": name,
-        "ssh_public_key": s.public_key_path.read_text().strip(),
+        "ssh_public_key": s.public_key_path.read_text(encoding="utf-8").strip(),
         "passwordless_sudo": s.passwordless_sudo,
         "idle_hours": s.idle_hours,
         "instance_type": instance_type,
@@ -406,7 +406,7 @@ def connect(ctx, name, quiet=False):
         ui.warn(f"{name} is {state}", f"ask a manager to run `barn start {name}`" if state == "stopped" else "")
     elif not quiet:
         ui.err.print(
-            f"[ok]●[/] [accent]ssh {name}[/]  [muted]·[/]  [accent]rsync -a ./dir {name}:~/[/]  [muted]·[/]  "
+            f"[ok]●[/] [accent]ssh {name}[/]  [muted]·[/]  [accent]scp -r ./dir {name}:~/[/]  [muted]·[/]  "
             f"[accent]herdr --remote {name}[/]"
         )
     return inst
@@ -658,7 +658,7 @@ def list_cmd(
 
 @app.command("connect", rich_help_panel=CONNECT)
 def connect_cmd(name: Name, account: Account = None):
-    """Add the box to ~/.ssh/barn.conf, so plain ssh, scp, rsync and herdr --remote work."""
+    """Add the box to ~/.ssh/barn.conf, so plain ssh, scp and herdr --remote work."""
     connect(box_context(name, account), name)
 
 
@@ -672,7 +672,10 @@ def ssh_cmd(typer_ctx: typer.Context, name: Name, account: Account = None):
     inst = connect(box_context(name, account), name, quiet=True)
     if inst["State"]["Name"] in ("stopped", "stopping"):
         raise typer.Exit(1)  # connect said so; a pending box is reachable in a moment
-    os.execvp("ssh", ["ssh", name, *typer_ctx.args])
+    argv = ["ssh", name, *typer_ctx.args]
+    if compat.WINDOWS:  # no exec on Windows: run ssh and pass its exit code on
+        raise typer.Exit(subprocess.run(argv).returncode)
+    os.execvp("ssh", argv)
 
 
 @app.command("doctor", rich_help_panel=CONNECT)

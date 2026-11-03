@@ -1,7 +1,10 @@
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 SCRIPT = Path(__file__).parent.parent / "src" / "barn" / "bootstrap" / "authorized_keys.py"
 spec = importlib.util.spec_from_file_location("authorized_keys", SCRIPT)
@@ -59,6 +62,7 @@ def test_blank_and_comment_lines_in_key_input_are_dropped():
     assert out.splitlines() == ["# >>> barn guests >>>", ALICE, "# <<< barn guests <<<"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="box-side script: chown and modes are Linux")
 def test_command_line(tmp_path):
     keys = tmp_path / "keys"
     keys.write_text(OWNER + "\n")

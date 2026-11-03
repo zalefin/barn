@@ -2,15 +2,22 @@
 optional shared_home and <barn home>/home/ onto the box (docs/plans/PLAN.md 9.2, 23.4).
 
 Local files win; remote files are never deleted; paths not in those
-directories are never touched. The one deletion is a guest key removed from
+directories are never touched. Files go as a tar stream over ssh (no rsync, so
+Linux and Windows work alike): only those whose content or mode differ from
+the box's copy, text files with LF line endings, keeping their mtimes. The one deletion is a guest key removed from
 guest_keys: the guests block of authorized_keys is rewritten wholesale.
 """
 
+import base64
 import fnmatch
-import subprocess
+import hashlib
+import io
+import json
+import os
+import tarfile
 from pathlib import Path
 
-from . import ssh, ui
+from . import compat, ssh, ui
 from .config import BOX_USER, ConfigError, check_name
 
 CREDENTIAL_PATTERNS = (".credentials.json", "data.sqlite3", "*token*", "*.pem")
@@ -34,35 +41,113 @@ def running_agents(alias):
     return r.stdout.strip()
 
 
-def rsync_cmd(src, alias):
-    """rsync each top-level entry of src rather than `src/`, so the remote home
-    directory's own mode is never changed (sshd refuses a group-writable home)."""
-    entries = sorted(str(p) for p in src.iterdir() if p.name != "README.md")
-    if not entries:
-        return None
-    return [
-        "rsync",
-        "-rlpt",  # no --delete: remote-only files stay
-        "--itemize-changes",
-        *entries,
-        f"{alias}:/home/{BOX_USER}/",
-    ]
+# Where synced files keep their mode on Windows, which has none: private ones.
+PRIVATE_DIRS = (".ssh", ".aws", ".barn")
 
 
-def changed_files(itemized):
-    """Paths rsync --itemize-changes reports as transferred (not just touched)."""
-    paths = []
-    for line in itemized.splitlines():
-        code, _, path = line.partition(" ")
-        # e.g. "<f+++++++++ .gitconfig" (new) or "<f.st...... .bashrc" (changed); "cd" lines are directories.
-        if len(code) == 11 and code[0] in "<>c" and code[1] == "f":
-            paths.append(path)
+def overlay(srcs):
+    """{relative path (with /): local path} of every file to sync; later
+    sources win. A source's top-level README.md is not synced."""
+    files = {}
+    for src in srcs:
+        for p in sorted(src.rglob("*")):
+            rel = p.relative_to(src).as_posix()
+            if rel != "README.md" and (p.is_symlink() or p.is_file()):
+                files[rel] = p
+    return files
+
+
+def file_mode(rel, path, data):
+    """The mode a file gets on the box: its own on Linux; on Windows 600 for
+    credentials and private directories, 755 for scripts, else 644."""
+    if not compat.WINDOWS:
+        return path.stat().st_mode & 0o777
+    if rel.split("/")[0] in PRIVATE_DIRS or any(fnmatch.fnmatch(path.name, p) for p in CREDENTIAL_PATTERNS):
+        return 0o600
+    return 0o755 if data.startswith(b"#!") else 0o644
+
+
+def local_entries(files):
+    """{rel: (manifest entry, file data or None, mtime)}; entries compare to the box's."""
+    out = {}
+    for rel, path in files.items():
+        if path.is_symlink():
+            out[rel] = (["l", os.readlink(path)], None, 0)
+            continue
+        data = compat.lf(path.read_bytes())
+        entry = ["f", hashlib.sha256(data).hexdigest(), file_mode(rel, path, data)]
+        out[rel] = (entry, data, int(path.stat().st_mtime))
+    return out
+
+
+# Run on the box: the same manifest entries for the paths that exist there.
+MANIFEST = """python3 - <<'BARN_PY'
+import base64, hashlib, json, os, stat
+home = os.path.expanduser("~")
+out = {}
+for rel in json.loads(base64.b64decode("PATHS")):
+    path = os.path.join(home, rel)
+    try:
+        st = os.lstat(path)
+    except OSError:
+        continue
+    if stat.S_ISLNK(st.st_mode):
+        out[rel] = ["l", os.readlink(path)]
+    elif stat.S_ISREG(st.st_mode):
+        with open(path, "rb") as f:
+            digest = hashlib.sha256(f.read()).hexdigest()
+        out[rel] = ["f", digest, stat.S_IMODE(st.st_mode)]
+    else:
+        out[rel] = ["other"]
+print(json.dumps(out))
+BARN_PY
+"""
+
+
+def remote_entries(alias, paths):
+    payload = base64.b64encode(json.dumps(sorted(paths)).encode()).decode()
+    r = ssh.run(alias, MANIFEST.replace("PATHS", payload), timeout=120)
+    if r.returncode != 0:
+        raise RuntimeError(f"cannot read files on {alias}: {r.stderr.strip()}")
+    return json.loads(r.stdout)
+
+
+def changed(local, remote):
+    """Paths whose entry differs on the box (or that it does not have)."""
+    return sorted(rel for rel, (entry, _, _) in local.items() if remote.get(rel) != entry)
+
+
+def archive(local, paths):
+    """A gzipped tar of paths, with their mtimes and modes. No directory entries:
+    existing directories (the home itself, ~/.ssh) keep their modes."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.PAX_FORMAT) as tar:
+        for rel in paths:
+            entry, data, mtime = local[rel]
+            info = tarfile.TarInfo(rel)
+            if entry[0] == "l":
+                info.type, info.linkname = tarfile.SYMTYPE, entry[1]
+                tar.addfile(info)
+            else:
+                info.size, info.mtime, info.mode = len(data), mtime, entry[2]
+                tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def push_files(alias, srcs):
+    """Copy the overlay onto the box. Returns the paths that were updated."""
+    local = local_entries(overlay(srcs))
+    paths = changed(local, remote_entries(alias, local)) if local else []
+    if paths:
+        r = ssh.pipe(alias, "tar -xzpf - -C ~", archive(local, paths))
+        if r.returncode != 0:
+            raise RuntimeError(f"copying files to {alias} failed: {r.stderr.strip()}")
     return paths
 
 
 def short(path):
     try:
-        return f"~/{Path(path).relative_to(Path.home())}"
+        return f"~/{Path(path).relative_to(Path.home()).as_posix()}"
     except ValueError:
         return str(path)
 
@@ -95,24 +180,20 @@ def sync(ctx, name):
         ui.info("move them to", short(ctx.home / "home"))
         return 1
 
+    srcs = sources(ctx)
+    if not overlay(srcs):
+        ui.info("nothing to sync", f"put files in {short(ctx.home / 'home')}")
+        return 0
+
     with ui.step(f"Checking {alias} for running agents"):
         busy = running_agents(alias)
     if busy:
         ui.fail("not syncing files: agents are running on the box; stop them first")
         ui.block(busy)
         return 1
-
-    srcs = [s for s in sources(ctx) if rsync_cmd(s, alias)]
-    if not srcs:
-        ui.info("nothing to sync", f"put files in {short(ctx.home / 'home')}")
-        return 0
-    for src in srcs:
-        with ui.step(f"{short(src)}/ → {alias}:~/") as st:
-            r = subprocess.run(rsync_cmd(src, alias), text=True, capture_output=True)
-            if r.returncode != 0:
-                raise RuntimeError(f"rsync failed ({r.returncode}): {r.stderr.strip()}")
-            files = changed_files(r.stdout)
-            st.result = f"{len(files)} file{'s' * (len(files) != 1)} updated" if files else "up to date"
-        if files:
-            ui.block("\n".join(files[:20]) + (f"\n… and {len(files) - 20} more" if len(files) > 20 else ""))
+    with ui.step(f"{', '.join(short(s) + '/' for s in srcs)} → {alias}:~/") as st:
+        files = push_files(alias, srcs)
+        st.result = f"{len(files)} file{'s' * (len(files) != 1)} updated" if files else "up to date"
+    if files:
+        ui.block("\n".join(files[:20]) + (f"\n… and {len(files) - 20} more" if len(files) > 20 else ""))
     return 0

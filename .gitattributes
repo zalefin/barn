@@ -1,0 +1,3 @@
+# barn's bootstrap scripts go to Linux boxes byte for byte: LF in every
+# checkout, Windows included (barn also normalizes them when installing).
+* text=auto eol=lf

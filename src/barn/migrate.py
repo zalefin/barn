@@ -21,7 +21,7 @@ import shutil
 import tomllib
 from importlib.metadata import version as dist_version
 
-from . import ui
+from . import compat, ui
 from .config import ConfigError
 
 KEY = "config_version"
@@ -211,7 +211,7 @@ def migrate(home, path, now=None):
     Returns the versions of the migrations that ran."""
     now = now or installed()
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         data = tomllib.loads(text)
     except (OSError, tomllib.TOMLDecodeError):
         return []  # load_settings reports it
@@ -243,9 +243,9 @@ def migrate(home, path, now=None):
         notes += more
     text = set_key(text, KEY, now, "the barn version this file's format is from; barn migrates it on upgrade")
     tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(text)
+    compat.write_text(tmp, text)
     tmp.chmod(path.stat().st_mode & 0o777)
-    os.replace(tmp, path)
+    compat.replace(tmp, path)
 
     ui.info(f"migrated {path.name} from barn {have} to {now}", f"old file kept as {backup.name}")
     for note in notes:

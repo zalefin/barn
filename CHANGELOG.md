@@ -5,6 +5,27 @@ minor release (0.x.0) may change the CLI or the files in `~/.config/barn/`;
 when it changes the files, barn migrates them automatically on first run
 (README: [Versions](README.md#versions)). Releases are git tags `vX.Y.Z`.
 
+## Unreleased
+
+- **Linux and Windows.** barn runs on both, and the tests run on both in CI
+  (GitHub Actions). On Windows: no more `No module named 'fcntl'` at start;
+  `~/.ssh/barn.conf` is locked with `msvcrt`; `barn ssh` runs ssh and passes
+  its exit code on; SSH entries run the SSM tunnel through PowerShell and
+  write `IdentityFile` with forward slashes, quoted when it has spaces; output
+  redirected to a file is UTF-8; the default `user` is the login name,
+  lowercased.
+- **Line endings.** Everything that reaches a box is LF: scripts barn runs over
+  ssh (a Windows text pipe would add CRs that bash rejects), the bootstrap
+  files Terraform sends at first boot (`.gitattributes`, and barn normalizes
+  them when installing), files `barn init` writes, and text files `sync`
+  copies. Files and tool output are read and written as UTF-8.
+- **`sync` without rsync.** Files go as a tar stream over ssh, only those
+  whose content (SHA-256) or mode differ from the box's copy, keeping their
+  mtimes. rsync is no longer a prerequisite. Nothing on the box is deleted,
+  as before; directory modes on the box are no longer changed.
+- **doctor** also warns about Windows paths (`C:\...`) in synced files, not
+  only WSL's `/mnt/c/...`.
+
 ## 0.4.0 (2026-11-02)
 
 - **Box commands find the box's account.** Without `--account`, `start`,

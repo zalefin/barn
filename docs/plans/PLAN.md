@@ -1055,3 +1055,33 @@ One person can use barn in several AWS accounts at once.
 - "For now": a per-account table in the user's `config.toml`. Per-box lists or
   keys in the shared account file were not wanted yet.
 
+
+## 28. Box commands find the box's account (0.4.0, 2026-11-02)
+
+- Without `--account`, box commands look for the box (instance or home
+  volume) in every account in parallel (`box_context`): `default_account` if
+  it has it, else the one account that does; several others ask for
+  `--account`. A box in no account is `default_account`'s, so `create` of a new
+  box is unchanged. Unreadable accounts are skipped, with a warning only if
+  the box is not found.
+
+## 29. Linux and Windows (2026-11-03)
+
+- Supported: Linux (WSL included) and native Windows with its OpenSSH client.
+  CI (GitHub Actions) runs the tests on `ubuntu-latest` and `windows-latest`.
+- Platform differences live in `compat.py`: the `barn.conf` lock (`fcntl` /
+  `msvcrt`), `os.replace` retried on Windows while ssh has the file open, and
+  UTF-8 + LF file writes. `barn ssh` runs ssh as a child on Windows (no exec).
+  `ProxyCommand` goes through `powershell.exe` there, as AWS documents.
+- Everything that reaches a box is LF: `ssh.run` sends scripts as bytes (a
+  Windows text pipe turns `\n` into `\r\n`), `install_roots` normalizes the
+  bootstrap files and `.gitattributes` keeps checkouts LF, `barn init` writes
+  LF, and `sync` sends text files with LF.
+- `sync` no longer uses rsync (not on Windows, and `C:\...` reads as
+  `host:path` to it): a manifest script on the box returns each overlay file's
+  SHA-256 and mode, and the changed files go as one tar stream over ssh into
+  `tar -xzp`. No deletes, no directory entries (directory modes on the box
+  stay). Windows files have no modes: 600 for `.ssh/`, `.aws/`, `.barn/` and
+  credential-looking names, 755 for `#!` scripts, else 644.
+- Not verified on a real Windows machine from here; CI on `windows-latest`
+  is the check, plus a first manual `init`/`connect`/`ssh`/`sync` there.

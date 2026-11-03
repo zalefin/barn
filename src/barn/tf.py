@@ -8,6 +8,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from . import compat
+
 PACKAGE = Path(__file__).parent
 # Package directories copied into the home; the instance root reads ../../bootstrap.
 MANAGED = ("terraform", "bootstrap")
@@ -45,13 +47,15 @@ def install_roots(home):
             rel = f.relative_to(src)
             wanted.add(rel)
             target = dst / rel
-            data = f.read_bytes()
+            # LF on every platform: the bootstrap files go to the box as they are,
+            # and a Windows checkout may have made them CRLF.
+            data = compat.lf(f.read_bytes())
             if target.exists() and target.read_bytes() == data:
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             tmp = target.with_name(f".{target.name}.tmp")
             tmp.write_bytes(data)
-            os.replace(tmp, target)
+            compat.replace(tmp, target)
         for f in dst.rglob("*"):
             if f.is_file() and f.relative_to(dst) not in wanted:
                 f.unlink()
@@ -81,7 +85,7 @@ class Terraform:
 
     def _run(self, *args, capture=False):
         cmd = ["terraform", f"-chdir={self.dir}", *args]
-        r = subprocess.run(cmd, env=self._environ(), text=True, capture_output=capture)
+        r = subprocess.run(cmd, env=self._environ(), encoding="utf-8", errors="replace", capture_output=capture)
         if r.returncode != 0:
             raise TerraformError(f"terraform {args[0]} ({self.root}) failed", tail=(r.stderr or "") if capture else "")
         return r.stdout
@@ -95,8 +99,13 @@ class Terraform:
         log = self.data_dir / f"{args[0]}.log"
         cmd = ["terraform", f"-chdir={self.dir}", *args, "-no-color"]
         lines = []
-        with open(log, "w") as f, subprocess.Popen(
-            cmd, env=self._environ(), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        with open(log, "w", encoding="utf-8") as f, subprocess.Popen(
+            cmd,
+            env=self._environ(),
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         ) as p:
             for line in p.stdout:
                 f.write(line)
@@ -135,7 +144,7 @@ class Terraform:
 
     def _var_file(self, variables):
         path = self.data_dir / "vars.tfvars.json"
-        path.write_text(json.dumps(variables, indent=2))
+        path.write_text(json.dumps(variables, indent=2), encoding="utf-8")
         return f"-var-file={path}"
 
     def apply(self, variables, on_line=None):

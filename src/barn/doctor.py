@@ -1,5 +1,6 @@
 """`doctor <name>` (docs/plans/PLAN.md section 12). Each check prints pass, warn, or fail."""
 
+import re
 import subprocess
 
 from botocore.config import Config
@@ -10,6 +11,8 @@ from .config import check_name
 from .sync import sources
 
 PASS, WARN, FAIL = "pass", "warn", "fail"
+# Paths on the laptop that mean nothing on the box: WSL's /mnt/c/..., Windows' C:\... or C:/Users/...
+LAPTOP_PATH = re.compile(r"/mnt/[a-z]/|\b[A-Za-z]:(\\|/Users/)")
 
 # Remote half: runs as the box user on the box and prints `status|check|detail`.
 REMOTE = r"""
@@ -158,7 +161,7 @@ def simulate_checks(ctx):
     return results
 
 
-def mnt_refs(ctx):
+def laptop_path_refs(ctx):
     hits = []
     for d in sources(ctx):
         for p in d.rglob("*"):
@@ -166,7 +169,7 @@ def mnt_refs(ctx):
                 continue  # not synced
             if p.is_file() and p.stat().st_size < 1_000_000:
                 try:
-                    if "/mnt/" in p.read_text(errors="strict"):
+                    if LAPTOP_PATH.search(p.read_text(encoding="utf-8", errors="strict")):
                         hits.append(str(p))
                 except (UnicodeDecodeError, OSError):
                     pass
@@ -266,7 +269,7 @@ def doctor(ctx, name):
                 show_console(ctx, iid)
 
     section("Local")
-    hits = mnt_refs(ctx)
-    add(WARN if hits else PASS, "no /mnt/ paths in synced files", ", ".join(hits))
+    hits = laptop_path_refs(ctx)
+    add(WARN if hits else PASS, "no laptop paths (/mnt/c, C:\\) in synced files", ", ".join(hits))
 
     return summarize(results)

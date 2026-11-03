@@ -160,6 +160,8 @@ def test_sync_needs_a_running_box(tmp_path, monkeypatch):
 
 def test_sync_pushes_guest_keys_even_while_agents_run(tmp_path, monkeypatch):
     monkeypatch.setattr(ssh.Path, "home", lambda: tmp_path)
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / ".bashrc").write_text("")
     ctx = FakeCtx(FakeEc2([instance("zach-dev", "zach", "i-new")]), guest_keys=[KEY_A], home=tmp_path)
     scripts = []
 
@@ -175,6 +177,57 @@ def test_sync_pushes_guest_keys_even_while_agents_run(tmp_path, monkeypatch):
     assert "pgrep" in scripts[1][1]
     # The SSH entry was refreshed to the current instance first.
     assert "HostName i-new" in (tmp_path / ".ssh" / "barn.conf").read_text()
+
+
+
+@pytest.mark.skipif(os.name == "nt", reason="runs the box side (bash, python3, GNU tar) locally")
+def test_sync_copies_changed_files_like_the_box_would(tmp_path, monkeypatch, capsys):
+    """sync end to end, with the box's side (manifest script, tar) run locally
+    in a fake home instead of over ssh."""
+    import shutil
+
+    if not shutil.which("tar") or not shutil.which("python3"):
+        pytest.skip("needs tar and python3")
+    monkeypatch.setattr(ssh.Path, "home", lambda: tmp_path)
+    box = tmp_path / "box"
+    (box / ".ssh").mkdir(parents=True)
+    (box / ".ssh").chmod(0o700)
+    (box / "notes.txt").write_text("remote only")
+    env = {**os.environ, "HOME": str(box)}
+
+    def run(alias, script, timeout=120):
+        if "pgrep" in script:
+            return subprocess.CompletedProcess([], 0, "", "")
+        return subprocess.run(["bash", "-s"], input=script, capture_output=True, text=True, env=env)
+
+    def pipe(alias, command, data, timeout=600):
+        r = subprocess.run(["bash", "-c", command], input=data, capture_output=True, env=env)
+        return subprocess.CompletedProcess([], r.returncode, r.stdout.decode(), r.stderr.decode())
+
+    monkeypatch.setattr(ssh, "run", run)
+    monkeypatch.setattr(ssh, "pipe", pipe)
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh" / "config.d").write_text("Host x\n")
+    (home / ".barn").mkdir()
+    (home / ".barn" / "env").write_bytes(b"export A=1\r\n")
+    (home / ".barn" / "env").chmod(0o600)
+    (home / "README.md").write_text("docs")
+    ctx = FakeCtx(FakeEc2([instance("zach-dev", "zach", "i-1")]), home=tmp_path)
+
+    assert sync.sync(ctx, "zach-dev") == 0
+    assert "2 files updated" in capsys.readouterr().err
+    assert (box / ".barn" / "env").read_bytes() == b"export A=1\n"
+    assert (box / ".barn" / "env").stat().st_mode & 0o777 == 0o600
+    assert (box / ".barn" / "env").stat().st_mtime == int((home / ".barn" / "env").stat().st_mtime)
+    assert (box / ".ssh").stat().st_mode & 0o777 == 0o700  # existing directories keep their mode
+    assert (box / "notes.txt").read_text() == "remote only" and not (box / "README.md").exists()
+
+    assert sync.sync(ctx, "zach-dev") == 0
+    assert "up to date" in capsys.readouterr().err
+    (home / ".ssh" / "config.d").write_text("Host y\n")
+    assert sync.sync(ctx, "zach-dev") == 0
+    assert "1 file updated" in capsys.readouterr().err and (box / ".ssh" / "config.d").read_text() == "Host y\n"
 
 
 # --- connect and list ---
@@ -335,6 +388,7 @@ def test_guest_keys_are_scoped_to_the_boxs_account(tmp_path, monkeypatch):
     assert KEY_A in pushed[0] and KEY_A not in pushed[1]  # the work box gets an empty guests block
 
 
+@pytest.mark.skipif(os.name == "nt", reason="runs the box side (bash) locally")
 def test_authorized_keys_script_runs(tmp_path):
     """The script create and sync send over SSH, run locally as if on the box."""
     home = tmp_path / "home"

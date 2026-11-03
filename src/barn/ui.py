@@ -2,6 +2,7 @@
 Colors and spinners turn themselves off when the stream is not a terminal, or
 with NO_COLOR set."""
 
+import sys
 import time
 from contextlib import contextmanager
 
@@ -10,6 +11,8 @@ from rich.markup import escape
 from rich.progress import Progress, ProgressColumn, SpinnerColumn, TextColumn
 from rich.text import Text
 from rich.theme import Theme
+
+from . import compat
 
 THEME = Theme(
     {
@@ -21,6 +24,13 @@ THEME = Theme(
         "name": "bold",
     }
 )
+
+if compat.WINDOWS:
+    # Redirected output there is cp1252, which has no ✓ or →; consoles are UTF-8 already.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure") and (stream.encoding or "").lower() not in ("utf-8", "utf8"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
 err = Console(stderr=True, theme=THEME, highlight=False)
 out = Console(theme=THEME, highlight=False)
 

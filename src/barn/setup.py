@@ -1,7 +1,6 @@
 """`barn init`: create the barn home from templates without overwriting anything,
 then check the tools and list the files the user still has to edit."""
 
-import getpass
 import json
 import os
 import shutil
@@ -13,8 +12,16 @@ from string import Template
 import boto3
 from rich.markup import escape
 
-from . import ui
-from .config import PLACEHOLDER, RENAMED, ConfigError, account_names, check_account_name, placeholders
+from . import compat, ui
+from .config import (
+    PLACEHOLDER,
+    RENAMED,
+    ConfigError,
+    account_names,
+    check_account_name,
+    default_user,
+    placeholders,
+)
 from .migrate import installed, migrate
 from .sync import short
 
@@ -37,7 +44,7 @@ def _write_new(path, text, mode=0o644):
     if path.exists():
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    compat.write_text(path, text)
     path.chmod(mode)
     return True
 
@@ -55,23 +62,23 @@ def scaffold(home, account=None, aws_profile=None, account_file=None):
         migrate(home, config)
     if config.exists() and not account and not account_file:
         try:
-            account = tomllib.loads(config.read_text()).get("default_account")
+            account = tomllib.loads(config.read_text(encoding="utf-8")).get("default_account")
         except tomllib.TOMLDecodeError:
             pass  # todo() reports it
     account = check_account_name(account or (account_file.stem if account_file else "default"), "--account")
 
     done = []
-    text = Template((TEMPLATES / "config.toml").read_text()).substitute(
+    text = Template((TEMPLATES / "config.toml").read_text(encoding="utf-8")).substitute(
         version=installed(),
         account=account,
         aws_profile=aws_profile or PLACEHOLDER,
-        user=os.environ.get("USER") or getpass.getuser(),
+        user=default_user(),
         ssh_public_key=find_ssh_key() or "~/.ssh/id_ed25519.pub",
     )
     done.append((config, "created" if _write_new(config, text) else "kept", ""))
 
     acct = home / "accounts" / f"{account}.toml"
-    source = account_file.read_text() if account_file else (TEMPLATES / "account.toml").read_text()
+    source = account_file.read_text(encoding="utf-8") if account_file else (TEMPLATES / "account.toml").read_text(encoding="utf-8")
     if _write_new(acct, source):
         done.append((acct, "copied" if account_file else "created", f"from {short(account_file)}" if account_file else ""))
     else:
@@ -80,13 +87,13 @@ def scaffold(home, account=None, aws_profile=None, account_file=None):
     env = home / "home" / ".barn" / "env"
     env.parent.mkdir(parents=True, exist_ok=True)
     env.parent.chmod(0o700)
-    done.append((env, "created" if _write_new(env, (TEMPLATES / "env").read_text(), 0o600) else "kept", ""))
+    done.append((env, "created" if _write_new(env, (TEMPLATES / "env").read_text(encoding="utf-8"), 0o600) else "kept", ""))
     return done
 
 
 def _run(*cmd):
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=20).stdout
+        return subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=20).stdout
     except (OSError, subprocess.TimeoutExpired):
         return ""
 
@@ -107,15 +114,14 @@ def tool_checks():
         if shutil.which("session-manager-plugin")
         else ("fail", "session-manager-plugin", f"not found; {SSM_PLUGIN_DOCS}")
     )
-    for tool in ("ssh", "rsync"):
-        results.append(("pass", tool, "") if shutil.which(tool) else ("fail", tool, "not found"))
+    results.append(("pass", "ssh", "") if shutil.which("ssh") else ("fail", "ssh", "not found; install OpenSSH"))
     return results
 
 
 def _toml(path, items):
     """Parsed path, or None with a to-do item when it is not valid TOML."""
     try:
-        return tomllib.loads(path.read_text())
+        return tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as e:
         items.append((True, path, f"not valid TOML: {e}"))
         return None
@@ -163,7 +169,7 @@ def todo(home):
             items.append((False, config, f"[guest_keys] {name}: no accounts/{name}.toml (a typo?)"))
 
     env = home / "home" / ".barn" / "env"
-    if not any(line.strip().startswith("export ") for line in env.read_text().splitlines()):
+    if not any(line.strip().startswith("export ") for line in env.read_text(encoding="utf-8").splitlines()):
         items.append((False, env, "add CLAUDE_CODE_OAUTH_TOKEN and KIRO_API_KEY, then `barn sync <name>`"))
     return items
 

@@ -138,9 +138,9 @@ def load_settings(home):
     from .migrate import migrate  # imports this module
 
     migrate(home, path)
-    data = tomllib.loads(path.read_text())
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
     data.pop("config_version", None)  # checked by migrate
-    data.setdefault("user", os.environ.get("USER") or getpass.getuser())
+    data.setdefault("user", default_user())
     settings = _build(Settings, path, data)
     check_account_name(settings.default_account, f"{path}: default_account")
     if not isinstance(settings.aws_profiles, dict) or not all(
@@ -161,6 +161,12 @@ def load_settings(home):
     return settings
 
 
+def default_user():
+    """$USER, or the login name (Windows has no $USER), lowercased: it starts
+    box names, which are lowercase."""
+    return (os.environ.get("USER") or getpass.getuser()).lower()
+
+
 def account_names(home):
     """Every account with a file in accounts/, sorted."""
     return sorted(p.stem for p in (home / "accounts").glob("*.toml") if ACCOUNT_NAME.match(p.stem))
@@ -177,7 +183,7 @@ def load_account(home, name):
     path = home / "accounts" / f"{name}.toml"
     if not path.exists():
         raise ConfigError(f"missing account file {path}; run `barn init`")
-    data = tomllib.loads(path.read_text())
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
     data.pop("name", None)
     return _build(Account, path, data, name=name)
 

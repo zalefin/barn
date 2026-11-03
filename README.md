@@ -17,12 +17,19 @@ what is needed and how to point the CLI at it;
 **[docs/onboarding.md](docs/onboarding.md)** is the order of work for setting
 up a new account and adding people to it.
 
-## Prerequisites (laptop / WSL)
+## Prerequisites
 
-- Terraform >= 1.10, AWS CLI v2, the Session Manager plugin, `rsync`, `ssh`
+barn runs on Linux (WSL included) and Windows; the tests run on both.
+
+- Terraform >= 1.10, AWS CLI v2, the Session Manager plugin, `ssh` (on Windows,
+  the built-in OpenSSH client)
 - [`uv`](https://docs.astral.sh/uv/)
 - An AWS CLI profile that assumes the `barn-manager` or `barn-guest` role (for example, an SSO profile)
 - An SSH key pair (`ssh-keygen -t ed25519`)
+
+On Windows, `~/.ssh` and `~/.config/barn` are under your user profile
+(`C:\Users\<you>`). The SSH entries barn writes run the SSM tunnel through
+PowerShell, as AWS documents for Windows.
 
 ## Install
 
@@ -104,7 +111,7 @@ reattach later with `herdr`. Don't run herdr inside tmux.
 | `stop` / `start <name>` | manager | Stops or starts any box. A stopped box costs only its volumes. |
 | `sync <name>` | manager | Pushes the account's `guest_keys` and copies your home directory overlay to your box. Local files win, nothing is deleted, and files are skipped while agents are running. Refuses someone else's box. |
 | `list [--account A]` | anyone | Every box in every account (or just one): account, owner (yours marked), state, type, uptime, rough cost. An account whose credentials fail is skipped with a warning. |
-| `connect <name>` | anyone | Adds the box to `~/.ssh/barn.conf` with your key and profile, so plain `ssh`, `scp`, `rsync` and `herdr --remote` work. Says if it is stopped. |
+| `connect <name>` | anyone | Adds the box to `~/.ssh/barn.conf` with your key and profile, so plain `ssh`, `scp`, `rsync` (where installed) and `herdr --remote` work. Says if it is stopped. |
 | `ssh <name> [args]` | anyone | `connect`, then `ssh <name>`. |
 | `doctor <name>` | anyone | Checks AWS, IAM (managers only), SSM, bootstrap, tools, network, linger, home mount and sign-in. |
 | `hold <name> <30m\|8h\|2d>` | anyone | Keeps the box from idle-stopping for that long. |
@@ -138,7 +145,7 @@ The guest then runs, with their own `barn init` and the same account file:
 ```bash
 barn list                  # find the box
 barn connect zach-dev      # adds it to ~/.ssh/barn.conf
-ssh zach-dev               # or scp, rsync -a ./data zach-dev:~/, herdr --remote zach-dev
+ssh zach-dev               # or scp -r ./data zach-dev:~/, herdr --remote zach-dev
 ```
 
 Guests log in as the same `ubuntu` user, with sudo, and see the same herdr
@@ -171,6 +178,14 @@ Paths are relative to the home directory: `home/.gitconfig` lands at
 `~/.gitconfig`. Top-level `README.md` files are skipped. Nothing on the box is
 deleted, and paths absent from these directories are never touched.
 
+Files go over ssh (no rsync needed): only those whose content or mode differs
+from the box's copy, keeping their modification times. Text files arrive with
+LF line endings, so a file edited on Windows still works in bash. Modes come
+from your files on Linux; Windows files have none, so there `sync` uses 600
+for anything under `.ssh/`, `.aws/` or `.barn/` and for credential-looking
+files, 755 for scripts starting with `#!`, and 644 for the rest. Existing
+directories on the box keep their modes.
+
 The simplest way to pass tokens is environment variables in
 `home/.barn/env`. The box sources it at the top of `~/.bashrc`, so
 interactive shells, herdr panes and `ssh box cmd` all see it:
@@ -180,7 +195,8 @@ export CLAUDE_CODE_OAUTH_TOKEN=...   # from `claude setup-token`
 export KIRO_API_KEY=...
 ```
 
-Run `chmod 600` on it; rsync keeps the mode. Other things worth syncing:
+On Linux, run `chmod 600` on it (`barn init` creates it that way); `sync`
+keeps the mode. Other things worth syncing:
 `.claude/settings.json`, `.claude/CLAUDE.md`, `.claude/skills/`, `.kiro/`,
 `.gitconfig`, `.config/herdr/config.toml`. Never sync the rest of
 `~/.local/share/kiro-cli/` (about 200 MB of bundled runtimes).

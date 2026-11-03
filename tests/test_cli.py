@@ -1,11 +1,13 @@
-import pytest
+import os
+from types import SimpleNamespace
 
+import pytest
 from typer.testing import CliRunner
 
 from barn import cli
 from barn.cli import app, parse_duration
 from barn.config import UBUNTU_AMI, ConfigError, account_names, check_name, load_account, load_settings
-from barn.sync import changed_files, credential_files, rsync_cmd
+from barn.sync import archive, changed, credential_files, local_entries, overlay
 from barn.tf import PACKAGE, install_roots, summary
 from barn.ui import elapsed
 
@@ -81,6 +83,16 @@ def test_ssh_refreshes_entry_and_passes_extra_args_through(calls, monkeypatch):
     assert calls == [("connect", "ctx(None)", "alice-dev")]
 
 
+def test_ssh_on_windows_runs_ssh_and_passes_its_exit_code(calls, monkeypatch):
+    monkeypatch.setattr(cli, "box_context", lambda name, account=None: "ctx")
+    monkeypatch.setattr(cli, "connect", lambda ctx, name, quiet: {"State": {"Name": "running"}})
+    monkeypatch.setattr(cli.compat, "WINDOWS", True)
+    ran = []
+    monkeypatch.setattr(cli.subprocess, "run", lambda argv: ran.append(argv) or SimpleNamespace(returncode=255))
+    assert CliRunner().invoke(app, ["ssh", "alice-dev", "-N"]).exit_code == 255
+    assert ran == [["ssh", "alice-dev", "-N"]] and calls == []  # no exec
+
+
 def test_help_lists_every_command():
     out = CliRunner().invoke(app, ["--help"]).output
     for name in ("create", "destroy", "start", "stop", "list", "connect", "ssh", "sync", "doctor", "hold"):
@@ -95,11 +107,6 @@ def test_terraform_summary_and_elapsed():
     assert summary("Destroy complete! Resources: 2 destroyed.") == "2 destroyed"
     assert summary("Error: boom") == ""
     assert (elapsed(5), elapsed(65), elapsed(3725)) == ("5s", "1m05s", "1h02m")
-
-
-def test_changed_files_ignores_dirs_and_untouched():
-    out = "cd+++++++++ .claude/\n<f+++++++++ .claude/settings.json\n.d..t...... ./\n<f.st...... .gitconfig\n"
-    assert changed_files(out) == [".claude/settings.json", ".gitconfig"]
 
 
 ACCOUNT = (
@@ -158,10 +165,14 @@ def test_load_account_rejects_missing_and_stale_keys(tmp_path):
 
 
 def test_install_roots_mirrors_package(tmp_path):
+    from barn.compat import lf
+
     install_roots(tmp_path)
-    assert (tmp_path / "terraform" / "instance" / "main.tf").read_bytes() == (
-        PACKAGE / "terraform" / "instance" / "main.tf"
-    ).read_bytes()
+    assert (tmp_path / "terraform" / "instance" / "main.tf").read_bytes() == lf(
+        (PACKAGE / "terraform" / "instance" / "main.tf").read_bytes()
+    )
+    # The bootstrap files go to the box byte for byte: never CRLF, even from a Windows checkout.
+    assert not [p for p in (tmp_path / "bootstrap").rglob("*") if p.is_file() and b"\r\n" in p.read_bytes()]
     assert (tmp_path / "bootstrap" / "user-data.sh.tftpl").is_file()
     # The instance root reads bootstrap files relative to itself.
     assert (tmp_path / "terraform" / "instance" / ".." / ".." / "bootstrap" / "idle-check.sh").is_file()
@@ -172,7 +183,19 @@ def test_install_roots_mirrors_package(tmp_path):
     edited.write_text("# edited")
     install_roots(tmp_path)
     assert not stale.exists()
-    assert edited.read_bytes() == (PACKAGE / "terraform" / "volume" / "main.tf").read_bytes()
+    assert edited.read_bytes() == lf((PACKAGE / "terraform" / "volume" / "main.tf").read_bytes())
+
+
+def test_install_roots_makes_crlf_lf(tmp_path, monkeypatch):
+    from barn import tf
+
+    pkg = tmp_path / "pkg"
+    (pkg / "bootstrap").mkdir(parents=True)
+    (pkg / "terraform").mkdir()
+    (pkg / "bootstrap" / "idle-check.sh").write_bytes(b"#!/bin/bash\r\necho hi\r\n")
+    monkeypatch.setattr(tf, "PACKAGE", pkg)
+    install_roots(tmp_path / "home")
+    assert (tmp_path / "home" / "bootstrap" / "idle-check.sh").read_bytes() == b"#!/bin/bash\necho hi\n"
 
 
 def test_credential_files(tmp_path):
@@ -185,20 +208,54 @@ def test_credential_files(tmp_path):
     assert sorted(map(str, credential_files(home))) == ["home/.claude/.credentials.json", "home/gitlab_token.txt"]
 
 
-def test_rsync_never_deletes_or_touches_home_dir(tmp_path):
+def test_overlay_merges_sources_and_skips_their_readme(tmp_path):
+    shared, home = tmp_path / "shared", tmp_path / "home"
+    for d in (shared / ".claude", home / ".claude"):
+        d.mkdir(parents=True)
+    (shared / "README.md").write_text("docs")
+    (shared / ".claude" / "settings.json").write_text("shared")
+    (shared / ".gitconfig").write_text("")
+    (home / ".claude" / "settings.json").write_text("mine")
+    (home / ".claude" / "README.md").write_text("not top level: synced")
+    files = overlay([shared, home])
+    assert sorted(files) == [".claude/README.md", ".claude/settings.json", ".gitconfig"]
+    assert files[".claude/settings.json"] == home / ".claude" / "settings.json"  # later wins
+    assert overlay([]) == {} and overlay([tmp_path / "empty"]) == {}
+
+
+def test_sync_sends_only_changes_with_lf_and_mtimes(tmp_path):
+    import io
+    import tarfile
+
     home = tmp_path / "home"
-    home.mkdir()
-    (home / "README.md").write_text("docs")
-    (home / ".gitconfig").write_text("")
-    (home / ".claude").mkdir()
-    cmd = rsync_cmd(home, "zach-dev")
-    assert not any("delete" in c for c in cmd if c.startswith("-"))
-    assert cmd[-3:] == [str(home / ".claude"), str(home / ".gitconfig"), "zach-dev:/home/ubuntu/"]
-    assert not any(c.endswith("README.md") or c.endswith("/") and c.startswith(str(home)) for c in cmd)
+    (home / ".barn").mkdir(parents=True)
+    (home / ".barn" / "env").write_bytes(b"export A=1\r\nexport B=2\r\n")  # written on Windows
+    (home / "blob.bin").write_bytes(b"\0\r\n")
+    (home / ".gitconfig").write_text("[user]\n")
+    local = local_entries(overlay([home]))
+    env = local[".barn/env"]
+    assert env[1] == b"export A=1\nexport B=2\n"
+    assert local["blob.bin"][1] == b"\0\r\n"  # binary: as is
+    remote = {".gitconfig": local[".gitconfig"][0], "blob.bin": ["f", "0" * 64, 0o644]}
+    assert changed(local, remote) == [".barn/env", "blob.bin"]
+    with tarfile.open(fileobj=io.BytesIO(archive(local, [".barn/env"]))) as tar:
+        (info,) = tar.getmembers()  # no directory entries: the box's directories keep their modes
+        assert info.name == ".barn/env" and info.mtime == env[2] and info.mode == env[0][2]
+        assert tar.extractfile(info).read() == env[1]
 
 
-def test_rsync_empty_source(tmp_path):
-    assert rsync_cmd(tmp_path, "a") is None
+def test_sync_modes_on_windows(tmp_path, monkeypatch):
+    from barn import compat
+    from barn.sync import file_mode
+
+    monkeypatch.setattr(compat, "WINDOWS", True)
+    f = tmp_path / "x"
+    f.write_text("")
+    assert file_mode(".barn/env", f, b"export A=1") == 0o600
+    assert file_mode(".ssh/id_ed25519", f, b"") == 0o600
+    assert file_mode(".config/gh/hosts_token.yml", tmp_path / "hosts_token.yml", b"") == 0o600
+    assert file_mode(".local/bin/hi", f, b"#!/bin/sh\n") == 0o755
+    assert file_mode(".gitconfig", f, b"[user]") == 0o644
 
 
 def test_init_scaffolds_without_overwriting(tmp_path, monkeypatch):
@@ -212,7 +269,9 @@ def test_init_scaffolds_without_overwriting(tmp_path, monkeypatch):
         ("accounts/default.toml", "created"),
         ("home/.barn/env", "created"),
     ]
-    assert (tmp_path / "home" / ".barn" / "env").stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":  # Windows has no Unix modes; sync gives it 600 on the box
+        assert (tmp_path / "home" / ".barn" / "env").stat().st_mode & 0o777 == 0o600
+    assert b"\r\n" not in (tmp_path / "home" / ".barn" / "env").read_bytes()  # sourced by bash on the box
     config = (tmp_path / "config.toml").read_text()
     assert 'user = "zach"' in config and 'default_account = "default"' in config
     from barn.migrate import installed
@@ -253,3 +312,12 @@ def test_init_copies_account_file(tmp_path, monkeypatch):
     assert any('add `work = "<profile>"` under [aws_profiles]' in w for _, _, w in todo(home))
     with pytest.raises(ConfigError, match="no such account file"):
         scaffold(tmp_path / "other", account_file=tmp_path / "missing.toml")
+
+
+def test_doctor_spots_laptop_paths():
+    from barn.doctor import LAPTOP_PATH
+
+    for text in ("/mnt/c/Users/zach/x", r"C:\Users\zach\x", "path = C:/Users/zach/x"):
+        assert LAPTOP_PATH.search(text), text
+    for text in ("https://gitlab.com/a", "key: /home/ubuntu", "/mnt/data/x"):
+        assert not LAPTOP_PATH.search(text), text
