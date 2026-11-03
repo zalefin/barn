@@ -34,7 +34,7 @@ PowerShell, as AWS documents for Windows.
 ## Install
 
 ```bash
-uv tool install git+<this repo>          # or a release: git+<this repo>@v0.5.1; from a clone: uv tool install .
+uv tool install git+<this repo>          # or a release: git+<this repo>@v0.5.2; from a clone: uv tool install .
 uv tool upgrade barn                     # later; barn --version shows what you have
 ```
 
