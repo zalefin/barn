@@ -249,6 +249,19 @@ uv run barn ...    # run from the checkout
 scripts/check.sh   # pytest, terraform fmt/validate, shellcheck
 ```
 
+Before finishing a feature, check it against a real account from a clean
+container (Docker; your barn home's default account and its manager and guest
+profiles, or pass `--account-file`, `--manager-profile`, `--guest-profile`):
+
+```bash
+scripts/integration.sh            # install, init, list as manager and guest (free)
+scripts/integration.sh --create   # also a real box: create, doctor, ssh, sync, hold,
+                                  # guest ssh and denied stop, stop/start, destroy (~15 min, a few cents)
+```
+
+The container gets short-lived credentials for the two roles and nothing else
+from your machine. A failure usually means a policy is missing a permission.
+
 ### Versions
 
 barn uses [semantic versioning](https://semver.org/); the version lives in

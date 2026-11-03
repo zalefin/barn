@@ -15,6 +15,10 @@ when it changes the files, barn migrates them automatically on first run
   us-east-1 table as before; it asks again an hour later. Add
   `pricing:GetProducts` to the manager and guest roles
   ([docs/account-prerequisites.md](docs/account-prerequisites.md)).
+- **`scripts/integration.sh`**: a manual end-to-end check against a real
+  account, in a clean container with only the manager and guest roles'
+  short-lived credentials; `--create` also takes a real box through its life
+  (README: [Development](README.md#development)).
 
 ## 0.5.0 (2026-11-03)
 
