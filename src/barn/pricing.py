@@ -1,7 +1,8 @@
 """On-demand prices for `list`, from the AWS Price List Query API
 (pricing:GetProducts) with the account's own profile, cached in the barn home
 for a week. When the API cannot be reached or the caller lacks the
-permission, the rough us-east-1 table below stands in."""
+permission (silently: it is optional), the rough us-east-1 table below
+stands in."""
 
 import json
 import threading
@@ -33,6 +34,8 @@ TTL = 7 * 86400
 FAILED_TTL = 3600
 # The Price List Query API has endpoints only in us-east-1, eu-central-1 and ap-south-1.
 ENDPOINT_REGION = "us-east-1"
+# The role lacks pricing:GetProducts (it is optional): rough prices, no warning.
+DENIED = {"AccessDeniedException", "AccessDenied"}
 CLIENT_CONFIG = Config(connect_timeout=3, read_timeout=5, retries={"max_attempts": 2})
 
 # Accounts are priced in parallel threads that share the cache file.
@@ -48,8 +51,10 @@ class Prices:
         self.aws = aws
         self.region = aws.account.region
         self.now = now
-        # Why a lookup failed in this run ("Code: message"), for one warning.
+        # Why a lookup failed in this run ("Code: message"), for one warning;
+        # a missing permission is not an error, only rough prices.
         self.error = None
+        self.denied = False
         self._memory = {}
         self._client = None
 
@@ -86,14 +91,18 @@ class Prices:
         if entry and now - entry["at"] < TTL:
             return entry["usd"] if entry["usd"] is not None else fallback
         failed = cache.get(self._error_key)
-        if self.error or failed and now - failed["at"] < FAILED_TTL:
+        if self.error or self.denied or failed and now - failed["at"] < FAILED_TTL:
             return fallback
         try:
             usd = self._lookup(unit, attributes)
         except (ClientError, BotoCoreError) as e:
             err = e.response.get("Error", {}) if isinstance(e, ClientError) else {}
-            self.error = f"{err.get('Code')}: {err.get('Message', '')}" if err else str(e)
-            self._store(self._error_key, {"at": now, "error": self.error})
+            message = f"{err.get('Code')}: {err.get('Message', '')}" if err else str(e)
+            if err.get("Code") in DENIED:
+                self.denied = True
+            else:
+                self.error = message
+            self._store(self._error_key, {"at": now, "error": message})
             return fallback
         # Unknown in this region is cached too, so it is not asked again for a week.
         self._store(key, {"at": now, "usd": usd})

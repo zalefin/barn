@@ -108,9 +108,14 @@ EOF
 # shellcheck disable=SC2329  # called through check and check_quiet
 guest() { BARN_SETTINGS=~/guest.toml barn "$@"; }
 
-# Rough prices mean the role lacks pricing:GetProducts.
 check_quiet "manager: list" 'rough us-east-1 prices|skipped account' barn list
 check_quiet "guest: list" 'rough us-east-1 prices|skipped account' guest list
+# list falls back to rough prices silently when the role lacks the
+# (optional) pricing:GetProducts, so ask for one price directly.
+for role in manager guest; do
+  check "$role: pricing:GetProducts" aws pricing get-products --profile "it-$role" --region us-east-1 \
+    --service-code AmazonEC2 --max-results 1 --query 'length(PriceList)' --output text
+done
 
 if [ "$IT_CREATE" != 1 ]; then
   summary

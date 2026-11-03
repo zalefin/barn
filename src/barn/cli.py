@@ -511,8 +511,6 @@ def list_boxes(account=None, make_context=None):
             ui.warn(f"skipped account {name}", f"{err.get('Code')}: {err.get('Message', '')}" if err else str(e))
             continue
         if price_error:
-            if "AccessDenied" in price_error:
-                price_error = "the role lacks pricing:GetProducts (docs/account-prerequisites.md)"
             ui.warn(f"rough us-east-1 prices for account {name}", price_error)
     if failed == len(names):
         return 1

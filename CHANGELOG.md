@@ -5,6 +5,13 @@ minor release (0.x.0) may change the CLI or the files in `~/.config/barn/`;
 when it changes the files, barn migrates them automatically on first run
 (README: [Versions](README.md#versions)). Releases are git tags `vX.Y.Z`.
 
+## Unreleased
+
+- **`list` no longer warns when the role lacks `pricing:GetProducts`.** The
+  permission is optional; without it, `list` quietly uses the rough us-east-1
+  prices. Other failed price lookups (no network) still warn.
+  `scripts/integration.sh` checks the permission directly.
+
 ## 0.5.1 (2026-11-03)
 
 - **`list` prices from AWS.** The COST column uses on-demand Linux prices and

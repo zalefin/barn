@@ -340,17 +340,22 @@ def test_list_spans_accounts_and_names_each_rows_account(tmp_path, monkeypatch, 
         cli.list_boxes("expired", make_context=make)
 
 
-def test_list_prices_running_boxes_and_warns_when_prices_are_rough(tmp_path, monkeypatch, capsys):
+def test_list_prices_running_boxes_and_warns_only_on_failed_lookups(tmp_path, monkeypatch, capsys):
     from botocore.exceptions import ClientError
 
     monkeypatch.setenv("BARN_HOME", str(tmp_path))
     monkeypatch.delenv("BARN_SETTINGS", raising=False)
     (tmp_path / "accounts").mkdir()
-    for name in ("sandbox", "work"):
+    for name in ("offline", "sandbox", "work"):
         (tmp_path / "accounts" / f"{name}.toml").write_text("")
     (tmp_path / "config.toml").write_text('default_account = "sandbox"\nuser = "zach"\n')
     denied = ClientError({"Error": {"Code": "AccessDeniedException", "Message": "nope"}}, "GetProducts")
-    apis = {"sandbox": FakePricing({"m7i.xlarge": 0.25, "gp3": 0.1}), "work": FakePricing(error=denied)}
+    throttled = ClientError({"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "GetProducts")
+    apis = {
+        "sandbox": FakePricing({"m7i.xlarge": 0.25, "gp3": 0.1}),
+        "work": FakePricing(error=denied),
+        "offline": FakePricing(error=throttled),
+    }
     ec2s = {
         "sandbox": FakeEc2(
             [instance("zach-dev", "zach", "i-1", itype="m7i.xlarge"),
@@ -358,16 +363,19 @@ def test_list_prices_running_boxes_and_warns_when_prices_are_rough(tmp_path, mon
             [volume("zach-dev", "zach", 200)],
         ),
         "work": FakeEc2([instance("bob-gpu", "bob", "i-3", itype="t3.large")]),
+        "offline": FakeEc2([instance("ann-dev", "ann", "i-4", itype="t3.small")]),
     }
     monkeypatch.setattr(ui.out, "width", 140)
     assert cli.list_boxes(make_context=lambda n: FakeCtx(ec2s[n], account=n, prices=apis[n])) == 0
     out = capsys.readouterr()
     assert "$0.25/h + $20/mo" in out.out  # 200 GB at $0.10
     assert "$0.08/h" in out.out  # t3.large from the rough table
-    assert "~$0.33/h" in out.out
+    assert "~$0.35/h" in out.out  # 0.25 + 0.0832 + 0.0208
     # Stopped boxes are not priced by the hour, so their types are not looked up.
     assert [c.get("instanceType") for c in apis["sandbox"].calls] == ["m7i.xlarge", None]
-    assert "rough us-east-1 prices for account work" in out.err and "pricing:GetProducts" in out.err
+    # A missing (optional) permission is silent; a failed lookup is not.
+    assert "account work" not in out.err and "AccessDenied" not in out.err
+    assert "rough us-east-1 prices for account offline" in out.err and "ThrottlingException" in out.err
     assert "account sandbox" not in out.err
 
 

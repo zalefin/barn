@@ -94,7 +94,7 @@ Everything a manager can change is limited to resources tagged
 | Actions | Scope | Why |
 |---|---|---|
 | `ec2:DescribeImages`, `DescribeInstanceAttribute`, `DescribeInstanceCreditSpecifications`, `DescribeInstanceTypes`, `DescribeInstances`, `DescribeSubnets`, `DescribeTags`, `DescribeVolumes`, `DescribeVolumesModifications`, `DescribeVpcs`; `ssm:DescribeInstanceInformation` | `*` (no resource-level permissions) | Exactly the reads Terraform, `list` and the SSM wait make. |
-| `pricing:GetProducts` | `*` (no resource-level permissions) | Optional: `list` prices boxes in the account's region. Without it, `list` warns and uses rough us-east-1 prices. |
+| `pricing:GetProducts` | `*` (no resource-level permissions) | Optional: `list` prices boxes in the account's region. Without it, `list` uses rough us-east-1 prices, without a warning. |
 | `ssm:GetParameter` | the AMI parameter only | Resolve the AMI. |
 | `ec2:RunInstances`, `ec2:CreateVolume` | instance and volume, only with `aws:RequestTag/barn = true` | Create the box and its home volume, tagged at creation. |
 | `ec2:RunInstances` | the subnets and security group, any image; network interfaces only in those subnets | Resources a launch uses. The ENI is created by the launch and deleted with the instance. |

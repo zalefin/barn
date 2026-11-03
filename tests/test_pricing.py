@@ -96,7 +96,8 @@ def test_a_denied_lookup_falls_back_and_is_not_retried_for_an_hour(tmp_path):
     prices = pricing.Prices(tmp_path, aws, clock)
     assert prices.hourly("t3.medium") == pricing.HOURLY["t3.medium"]
     assert prices.gp3_month_per_gb() == pricing.GP3_MONTH_PER_GB
-    assert prices.error.startswith("AccessDeniedException: not authorized")
+    # The permission is optional: rough prices, but not an error to warn about.
+    assert prices.denied and prices.error is None
     assert len(api.calls) == 1  # one failure stops the run's other lookups
 
     # The next run within the hour does not ask (and so does not warn again).
