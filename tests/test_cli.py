@@ -60,6 +60,7 @@ def test_commands_parse(calls):
 
 
 def test_ssh_refreshes_entry_and_passes_extra_args_through(calls, monkeypatch):
+    monkeypatch.setattr(cli.compat, "WINDOWS", False)  # exec; Windows runs ssh (the next test)
     monkeypatch.setattr(cli, "box_context", lambda name, account=None: f"ctx({account})")
     state = {"Name": "running"}
     monkeypatch.setattr(cli, "connect", lambda ctx, name, quiet: calls.append(("connect", ctx, name)) or {"State": state})
@@ -205,7 +206,7 @@ def test_credential_files(tmp_path):
     assert credential_files(home) == []
     (home / ".claude" / ".credentials.json").write_text("{}")
     (home / "gitlab_token.txt").write_text("x")
-    assert sorted(map(str, credential_files(home))) == ["home/.claude/.credentials.json", "home/gitlab_token.txt"]
+    assert sorted(p.as_posix() for p in credential_files(home)) == ["home/.claude/.credentials.json", "home/gitlab_token.txt"]
 
 
 def test_overlay_merges_sources_and_skips_their_readme(tmp_path):
