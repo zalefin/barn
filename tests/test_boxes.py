@@ -1,5 +1,6 @@
 """Box names, the owner guard, connect, list and guest keys (docs/plans/PLAN.md 23), against a fake EC2."""
 
+import json
 import os
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -69,10 +70,33 @@ class FakeEc2:
         return Pages()
 
 
+class FakePricing:
+    """The Price List API: {instance type or "gp3": USD} in every region, or
+    error, a ClientError every call raises."""
+
+    def __init__(self, prices=(), error=None):
+        self.prices = dict(prices)
+        self.error = error
+        self.calls = []
+
+    def get_products(self, ServiceCode, Filters, MaxResults):
+        attrs = {f["Field"]: f["Value"] for f in Filters}
+        self.calls.append(attrs)
+        if self.error:
+            raise self.error
+        key = attrs.get("instanceType") or attrs.get("volumeApiName")
+        if key not in self.prices:
+            return {"PriceList": []}
+        unit = "Hrs" if "instanceType" in attrs else "GB-Mo"
+        dim = {"unit": unit, "pricePerUnit": {"USD": f"{self.prices[key]:.10f}"}}
+        product = {"product": {"attributes": attrs}, "terms": {"OnDemand": {"T": {"priceDimensions": {"D": dim}}}}}
+        return {"PriceList": [json.dumps(product)]}
+
+
 class FakeCtx(cli.Context):
     """A Context with fake settings, account and EC2; no files or AWS."""
 
-    def __init__(self, ec2, user="zach", guest_keys=(), home=None, account="sandbox"):
+    def __init__(self, ec2, user="zach", guest_keys=(), home=None, account="sandbox", prices=None):
         self.home = home
         self.settings = SimpleNamespace(
             user=user,
@@ -82,7 +106,12 @@ class FakeCtx(cli.Context):
             default_size="m7i.xlarge",
         )
         self.account = SimpleNamespace(region="us-east-1", name=account, manager_role_arn="")
-        self.aws = SimpleNamespace(client=lambda name, **kw: ec2, profile=f"barn-{user}-{account}", account=self.account)
+        pricing_client = prices or FakePricing()
+        self.aws = SimpleNamespace(
+            client=lambda name, **kw: pricing_client if name == "pricing" else ec2,
+            profile=f"barn-{user}-{account}",
+            account=self.account,
+        )
         self.verbose = False
         self._roots_installed = True
 
@@ -311,6 +340,37 @@ def test_list_spans_accounts_and_names_each_rows_account(tmp_path, monkeypatch, 
         cli.list_boxes("expired", make_context=make)
 
 
+def test_list_prices_running_boxes_and_warns_when_prices_are_rough(tmp_path, monkeypatch, capsys):
+    from botocore.exceptions import ClientError
+
+    monkeypatch.setenv("BARN_HOME", str(tmp_path))
+    monkeypatch.delenv("BARN_SETTINGS", raising=False)
+    (tmp_path / "accounts").mkdir()
+    for name in ("sandbox", "work"):
+        (tmp_path / "accounts" / f"{name}.toml").write_text("")
+    (tmp_path / "config.toml").write_text('default_account = "sandbox"\nuser = "zach"\n')
+    denied = ClientError({"Error": {"Code": "AccessDeniedException", "Message": "nope"}}, "GetProducts")
+    apis = {"sandbox": FakePricing({"m7i.xlarge": 0.25, "gp3": 0.1}), "work": FakePricing(error=denied)}
+    ec2s = {
+        "sandbox": FakeEc2(
+            [instance("zach-dev", "zach", "i-1", itype="m7i.xlarge"),
+             instance("zach-off", "zach", "i-2", state="stopped", itype="m7i.2xlarge")],
+            [volume("zach-dev", "zach", 200)],
+        ),
+        "work": FakeEc2([instance("bob-gpu", "bob", "i-3", itype="t3.large")]),
+    }
+    monkeypatch.setattr(ui.out, "width", 140)
+    assert cli.list_boxes(make_context=lambda n: FakeCtx(ec2s[n], account=n, prices=apis[n])) == 0
+    out = capsys.readouterr()
+    assert "$0.25/h + $20/mo" in out.out  # 200 GB at $0.10
+    assert "$0.08/h" in out.out  # t3.large from the rough table
+    assert "~$0.33/h" in out.out
+    # Stopped boxes are not priced by the hour, so their types are not looked up.
+    assert [c.get("instanceType") for c in apis["sandbox"].calls] == ["m7i.xlarge", None]
+    assert "rough us-east-1 prices for account work" in out.err and "pricing:GetProducts" in out.err
+    assert "account sandbox" not in out.err
+
+
 def test_box_commands_find_the_boxs_account(tmp_path, monkeypatch, capsys):
     from botocore.exceptions import TokenRetrievalError
 
@@ -442,5 +502,10 @@ def test_guest_policy_is_the_managers_ssh_statements_plus_reads():
     assert len(ssh_stmts) == 2 and all(s in guest for s in ssh_stmts)
     reads = [s for s in guest if s not in ssh_stmts]
     assert len(reads) == 1 and reads[0]["Resource"] == "*"
-    assert sorted(reads[0]["Action"]) == ["ec2:DescribeInstances", "ec2:DescribeVolumes", "ssm:DescribeInstanceInformation"]
+    assert sorted(reads[0]["Action"]) == [
+        "ec2:DescribeInstances",
+        "ec2:DescribeVolumes",
+        "pricing:GetProducts",
+        "ssm:DescribeInstanceInformation",
+    ]
     assert any(s["Sid"] == "Doctor" and s["Resource"] == "MANAGER_ROLE_ARN" for s in manager)

@@ -15,7 +15,7 @@ from rich import box
 from rich.prompt import Prompt
 from rich.table import Table
 
-from . import compat, ssh, ui
+from . import compat, pricing, ssh, ui
 from .aws import Aws
 from .config import BOX_USER, ConfigError, account_names, app_home, check_name, load_account, load_settings
 from .tf import Terraform, TerraformError, install_roots
@@ -23,19 +23,6 @@ from .tf import Terraform, TerraformError, install_roots
 MARKER = "/var/lib/barn/bootstrap-done"
 FAILED = "/var/lib/barn/bootstrap-failed"
 
-# Rough us-east-1 on-demand $/hour, for `list`. Unknown types show "?".
-HOURLY = {
-    "t3.micro": 0.0104,
-    "t3.small": 0.0208,
-    "t3.medium": 0.0416,
-    "t3.large": 0.0832,
-    "t3.xlarge": 0.1664,
-    "m7i.large": 0.1008,
-    "m7i.xlarge": 0.2016,
-    "m7i.2xlarge": 0.4032,
-    "m7i.4xlarge": 0.8064,
-}
-GP3_MONTH_PER_GB = 0.08
 STATE_STYLE = {"running": "ok", "stopped": "muted", "pending": "warn", "stopping": "warn"}
 
 
@@ -107,6 +94,10 @@ class Context:
     def has_box(self, name):
         """Whether the account has an instance or volume of the box."""
         return any(True for _ in self.instances(name)) or any(True for _ in self.volumes(name))
+
+    def prices(self):
+        """On-demand prices in this account's region."""
+        return pricing.Prices(self.home, self.aws)
 
     def owners(self, name):
         """barn:owner of every instance and volume named name."""
@@ -449,13 +440,14 @@ def box_table(found, me, width=120):
         b = found[account, name]
         state = b.get("state", "no box")
         up = b.get("uptime")
-        hourly = HOURLY.get(b.get("type"))
+        # Prices list_boxes looked up, else the rough table (a box_table of boxes() alone).
+        hourly = b.get("hourly", pricing.HOURLY.get(b.get("type")))
         cost = []
         if state == "running":
             cost.append(f"${hourly:.2f}/h" if hourly else "?/h")
             hourly_total += hourly or 0
         if b.get("volume_gb"):
-            cost.append(f"${b['volume_gb'] * GP3_MONTH_PER_GB:.0f}/mo")
+            cost.append(f"${b['volume_gb'] * b.get('gb_month', pricing.GP3_MONTH_PER_GB):.0f}/mo")
         owner = b.get("owner") or "?"
         row = [
             account,
@@ -494,20 +486,34 @@ def list_boxes(account=None, make_context=None):
         raise ConfigError(f"no account files in {home / 'accounts'}; run `barn init`")
 
     def fetch(name):
-        return boxes(make_context(name))
+        ctx = make_context(name)
+        found = boxes(ctx)
+        prices = ctx.prices()
+        for b in found.values():
+            if b.get("state") == "running":
+                b["hourly"] = prices.hourly(b["type"])
+            if b.get("volume_gb"):
+                b["gb_month"] = prices.gp3_month_per_gb()
+        return found, prices.error
 
     found, failed = {}, 0
     with ui.step(f"Reading {len(names)} account{'s' * (len(names) != 1)}"), ThreadPoolExecutor(8) as pool:
         results = [(n, pool.submit(fetch, n)) for n in names]
     for name, future in results:
         try:
-            found.update({(name, box_name): b for box_name, b in future.result().items()})
+            boxes_found, price_error = future.result()
+            found.update({(name, box_name): b for box_name, b in boxes_found.items()})
         except (ConfigError, ClientError, BotoCoreError) as e:
             if account:
                 raise
             failed += 1
             err = e.response.get("Error", {}) if isinstance(e, ClientError) else {}
             ui.warn(f"skipped account {name}", f"{err.get('Code')}: {err.get('Message', '')}" if err else str(e))
+            continue
+        if price_error:
+            if "AccessDenied" in price_error:
+                price_error = "the role lacks pricing:GetProducts (docs/account-prerequisites.md)"
+            ui.warn(f"rough us-east-1 prices for account {name}", price_error)
     if failed == len(names):
         return 1
     if not found:

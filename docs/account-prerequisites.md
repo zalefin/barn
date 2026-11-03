@@ -94,6 +94,7 @@ Everything a manager can change is limited to resources tagged
 | Actions | Scope | Why |
 |---|---|---|
 | `ec2:DescribeImages`, `DescribeInstanceAttribute`, `DescribeInstanceCreditSpecifications`, `DescribeInstanceTypes`, `DescribeInstances`, `DescribeSubnets`, `DescribeTags`, `DescribeVolumes`, `DescribeVolumesModifications`, `DescribeVpcs`; `ssm:DescribeInstanceInformation` | `*` (no resource-level permissions) | Exactly the reads Terraform, `list` and the SSM wait make. |
+| `pricing:GetProducts` | `*` (no resource-level permissions) | Optional: `list` prices boxes in the account's region. Without it, `list` warns and uses rough us-east-1 prices. |
 | `ssm:GetParameter` | the AMI parameter only | Resolve the AMI. |
 | `ec2:RunInstances`, `ec2:CreateVolume` | instance and volume, only with `aws:RequestTag/barn = true` | Create the box and its home volume, tagged at creation. |
 | `ec2:RunInstances` | the subnets and security group, any image; network interfaces only in those subnets | Resources a launch uses. The ENI is created by the launch and deleted with the instance. |
@@ -114,13 +115,14 @@ calls KMS on the manager's behalf and the key policy allows it; see row 8).
 ## Guest permissions
 
 [`guest-policy.json`](guest-policy.json): the manager policy's two
-`StartSshSession*` statements, verbatim, and three reads. Replace `REGION` and
+`StartSshSession*` statements, verbatim, and four reads. Replace `REGION` and
 `ACCOUNT_ID`.
 
 | Actions | Scope | Why |
 |---|---|---|
 | `ec2:DescribeInstances`, `ec2:DescribeVolumes`, `ssm:DescribeInstanceInformation` | `*` | `list`, `connect`, `ssh` and `doctor` find boxes and check they are online. |
 | `ssm:StartSession` | tagged instances and only the `AWS-StartSSHSession` document, as for managers | The SSH tunnel. |
+| `pricing:GetProducts` | `*` | Optional, as for managers: `list` prices. |
 
 A guest has no access to the state bucket, cannot create, start, stop or change
 anything, and cannot read console output. `doctor` skips its policy simulation

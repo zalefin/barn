@@ -6,6 +6,7 @@
       "Effect": "Allow",
       "Action": [
         "ssm:DescribeInstanceInformation",
+        "pricing:GetProducts",
         "ec2:DescribeVolumes",
         "ec2:DescribeInstances"
       ],

@@ -110,7 +110,7 @@ reattach later with `herdr`. Don't run herdr inside tmux.
 | `destroy <name> --volume` | manager | Also deletes the home volume, after you type the name to confirm. |
 | `stop` / `start <name>` | manager | Stops or starts any box. A stopped box costs only its volumes. |
 | `sync <name>` | manager | Pushes the account's `guest_keys` and copies your home directory overlay to your box. Local files win, nothing is deleted, and files are skipped while agents are running. Refuses someone else's box. |
-| `list [--account A]` | anyone | Every box in every account (or just one): account, owner (yours marked), state, type, uptime, rough cost. An account whose credentials fail is skipped with a warning. |
+| `list [--account A]` | anyone | Every box in every account (or just one): account, owner (yours marked), state, type, uptime, cost (on-demand prices from the AWS Price List API in the account's region, cached for a week; rough us-east-1 prices without `pricing:GetProducts`). An account whose credentials fail is skipped with a warning. |
 | `connect <name>` | anyone | Adds the box to `~/.ssh/barn.conf` with your key and profile, so plain `ssh`, `scp`, `rsync` (where installed) and `herdr --remote` work. Says if it is stopped. |
 | `ssh <name> [args]` | anyone | `connect`, then `ssh <name>`. |
 | `doctor <name>` | anyone | Checks AWS, IAM (managers only), SSM, bootstrap, tools, network, linger, home mount and sign-in. |

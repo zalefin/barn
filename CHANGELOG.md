@@ -5,6 +5,17 @@ minor release (0.x.0) may change the CLI or the files in `~/.config/barn/`;
 when it changes the files, barn migrates them automatically on first run
 (README: [Versions](README.md#versions)). Releases are git tags `vX.Y.Z`.
 
+## Unreleased
+
+- **`list` prices from AWS.** The COST column uses on-demand Linux prices and
+  gp3 storage prices for each account's region, from the AWS Price List API
+  (`pricing:GetProducts`), cached for a week in `~/.config/barn/prices.json`.
+  Any instance type is priced, not only the nine barn knew. Without the
+  permission (or without network access), `list` warns and uses the rough
+  us-east-1 table as before; it asks again an hour later. Add
+  `pricing:GetProducts` to the manager and guest roles
+  ([docs/account-prerequisites.md](docs/account-prerequisites.md)).
+
 ## 0.5.0 (2026-11-03)
 
 - **Linux and Windows.** barn runs on both, and the tests run on both in CI
