@@ -5,7 +5,7 @@ minor release (0.x.0) may change the CLI or the files in `~/.config/barn/`;
 when it changes the files, barn migrates them automatically on first run
 (README: [Versions](README.md#versions)). Releases are git tags `vX.Y.Z`.
 
-## Unreleased
+## 0.5.0 (2026-11-03)
 
 - **Linux and Windows.** barn runs on both, and the tests run on both in CI
   (GitHub Actions). On Windows: no more `No module named 'fcntl'` at start;
