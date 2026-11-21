@@ -226,7 +226,9 @@ attaches the developer policy.
 
 ### 7.2 Volume root
 
-- One gp3 volume, default 100 GB, encrypted (KMS key if given), tagged.
+- One gp3 volume, encrypted (KMS key if given), tagged. Size: `create
+  --volume-gb`, else `volume_gb` (default 100), but never less than the
+  volume already is (section 31).
 - **[SPEC] AZ pinning:** the volume's AZ is fixed by the subnet chosen at first
   create. The CLI records that subnet in the volume root's outputs and the
   instance root always uses the same subnet, so a recreated instance can attach.
@@ -388,7 +390,7 @@ errors (for example a guest calling `start`) print as one line.
 
 | Command | Who | Behavior |
 |---|---|---|
-| `create <name> [--size T]` | manager | owner guard; apply volume root, then instance root; wait for SSM online and bootstrap marker; write SSH entry; push `guest_keys`. Re-run with new `--size` to resize. |
+| `create <name> [--size T] [--volume-gb GB]` | manager | owner guard; apply volume root, then instance root; wait for SSM online and bootstrap marker; write SSH entry; push `guest_keys`. Re-run with new `--size` to resize, or a larger `--volume-gb` to grow the home volume. |
 | `destroy <name> [--volume] [--force]` | manager | owner guard (unless `--force`); destroy instance root; with `--volume`, also the volume root after typed confirmation. |
 | `stop <name>` / `start <name>` | manager | boto3 stop/start on any box; wait for state. |
 | `sync <name>` | manager | section 9.2. |
@@ -1131,3 +1133,18 @@ script in `config.toml` for every box; it runs at first boot of each instance.
   and sign-in) only where the default ran, else only for tools that are on
   PATH. It compares the box's `startup.sh` (SHA-256) with the local file and
   warns when they differ: the next `create` replaces the instance.
+
+## 31. Home volume size per box (0.7.0, 2026-11-06)
+
+User decision: `create` takes the home volume's size, per box.
+
+- `create --volume-gb GB` (1 to 16384, gp3's range) sets the box's home
+  volume size. Without it, `volume_gb` from `config.toml` applies, as before.
+- EBS volumes only grow, so `create` reads the current size
+  (`DescribeVolumes`, already in both policies) before changing anything:
+  without the flag the size is the larger of the current one and
+  `volume_gb`, so re-running `create` keeps a volume grown past `volume_gb`;
+  a `--volume-gb` below the current size is refused. Growing uses the
+  existing path (`ModifyVolume`, then `resize2fs` over SSH).
+- No config, layout, bootstrap or IAM change: no migration, and existing
+  instances are not replaced.

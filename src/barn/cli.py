@@ -194,13 +194,13 @@ def show_console(ctx, instance_id):
     ui.block(tail, title="console output (last 40 lines)")
 
 
-def volume_vars(ctx, name, subnet_id):
+def volume_vars(ctx, name, subnet_id, size_gb=None):
     return {
         "region": ctx.account.region,
         "user": ctx.settings.user,
         "name": name,
         "subnet_id": subnet_id,
-        "size_gb": ctx.settings.volume_gb,
+        "size_gb": size_gb or ctx.settings.volume_gb,
         "kms_key_id": ctx.account.kms_key_id,
         "extra_tags": ctx.account.extra_tags,
     }
@@ -271,11 +271,24 @@ def wait_for_bootstrap(ctx, name, instance_id, timeout=1500):
             ui.warn("bootstrap", line.removeprefix("warning:").strip())
 
 
+def home_volume_gb(ctx, name, vol, requested=None):
+    """The home volume's size for create: --volume-gb, else volume_gb, but never
+    less than the volume already is (EBS volumes only grow)."""
+    current = 0
+    if vol:
+        current = next((v["Size"] for v in ctx.volumes(name) if v.get("VolumeId") == vol["volume_id"]), 0)
+    if requested and requested < current:
+        raise ConfigError(
+            f"--volume-gb {requested} is less than {name}'s home volume ({current} GB); EBS volumes can only grow"
+        )
+    return requested or max(current, ctx.settings.volume_gb)
+
+
 def apply(tf, variables, s):
     s.result = tf.apply(variables, on_line=s.update)
 
 
-def create(ctx, name, size=None):
+def create(ctx, name, size=None, volume_gb=None):
     name = check_name(name)
     # Before anything changes: a bad script would otherwise fail after the volume.
     startup = read_startup_script(ctx.settings, ctx.home)
@@ -285,15 +298,17 @@ def create(ctx, name, size=None):
         inst_tf = ctx.tf(name, "instance")
         vol = vol_tf.outputs()
         current = ctx.find_instance(name)
+        volume_gb = home_volume_gb(ctx, name, vol, volume_gb)
     size = size or (current or {}).get("InstanceType") or ctx.settings.default_size
     ui.header(name, size, ctx.account.region, f"account {ctx.account.name}")
     script = ctx.settings.startup_script_path(ctx.home)
     ui.info("startup script", short(script) if script else "barn's default")
+    ui.info("home volume", f"{volume_gb} GB")
 
     subnet = vol.get("subnet_id") or ctx.account.subnet_ids[0]
     existed = bool(vol)
     with ui.step("Home volume") as s:
-        apply(vol_tf, volume_vars(ctx, name, subnet), s)
+        apply(vol_tf, volume_vars(ctx, name, subnet, volume_gb), s)
         changed = existed and " 0 changed" not in f" {s.result}"
         vol = vol_tf.outputs()
         s.result = " · ".join(p for p in (vol["volume_id"], vol["availability_zone"], s.result) if p)
@@ -626,11 +641,17 @@ def init_cmd(
 def create_cmd(
     name: Name,
     size: Annotated[str | None, typer.Option(metavar="TYPE", help="EC2 instance type (default: default_size).")] = None,
+    volume_gb: Annotated[
+        int | None,
+        typer.Option(
+            "--volume-gb", metavar="GB", min=1, max=16384, help="Home volume size; it can only grow (default: volume_gb)."
+        ),
+    ] = None,
     verbose: Verbose = False,
     account: Account = None,
 ):
-    """Create or update a box: home volume, then instance. Re-run with --size to resize."""
-    create(box_context(name, account, verbose), name, size)
+    """Create or update a box: home volume, then instance. Re-run with --size or --volume-gb to resize."""
+    create(box_context(name, account, verbose), name, size, volume_gb)
 
 
 @app.command("destroy", rich_help_panel=MANAGE)

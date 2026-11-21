@@ -107,7 +107,7 @@ reattach later with `herdr`. Don't run herdr inside tmux.
 
 | Command | Who | What it does |
 |---|---|---|
-| `create <name> [--size TYPE]` | manager | Creates or updates the box. Re-run it with a new `--size` to resize in place. Refuses a name someone else's box uses. |
+| `create <name> [--size TYPE] [--volume-gb GB]` | manager | Creates or updates the box. Re-run it with a new `--size` to resize in place, or a larger `--volume-gb` to grow the home volume (default `volume_gb`; volumes only grow, and a box keeps a size grown past `volume_gb`). Refuses a name someone else's box uses. |
 | `destroy <name>` | manager | Deletes the box but **keeps the home volume**. `create` brings it back with your files and the same SSH host key. Refuses someone else's box unless `--force`. |
 | `destroy <name> --volume` | manager | Also deletes the home volume, after you type the name to confirm. |
 | `stop` / `start <name>` | manager | Stops or starts any box. A stopped box costs only its volumes. |
@@ -118,7 +118,7 @@ reattach later with `herdr`. Don't run herdr inside tmux.
 | `doctor <name>` | anyone | Checks AWS, IAM (managers only), SSM, bootstrap, tools, network, linger, home mount and sign-in. |
 | `hold <name> <30m\|8h\|2d>` | anyone | Keeps the box from idle-stopping for that long. |
 
-You can have several boxes (`create zach-dev`, `create zach-big --size m7i.2xlarge`).
+You can have several boxes (`create zach-dev`, `create zach-big --size m7i.2xlarge --volume-gb 500`).
 Each has its own volume, instance and state.
 
 ## Guests

@@ -103,7 +103,7 @@ convention (`jdoe-dev`) avoids clashes.
 
 ```bash
 barn list                      # all boxes in all accounts: owner, state, type, uptime, cost
-barn create jdoe-dev           # manager; add --account work for another account, --size TYPE to choose size
+barn create jdoe-dev           # manager; add --account work for another account, --size TYPE to choose size, --volume-gb GB for the home volume
 barn sync jdoe-dev             # push guest_keys and home/ overlay onto the box
 barn doctor jdoe-dev           # everything green?
 barn ssh jdoe-dev              # connect + ssh; afterwards plain `ssh jdoe-dev` works too
@@ -115,7 +115,7 @@ accounts have a box with the same name.
 
 | Command | What it does |
 |---|---|
-| `create <name> [--size TYPE] [-v]` | Create, or update in place. Re-run with a new `--size` to resize. `-v` streams Terraform output. |
+| `create <name> [--size TYPE] [--volume-gb GB] [-v]` | Create, or update in place. Re-run with a new `--size` to resize, or a larger `--volume-gb` to grow the home volume (it never shrinks). `-v` streams Terraform output. |
 | `destroy <name> [-v]` | Delete the instance, **keep the home volume**. A later `create` brings back the files and the same SSH host key. |
 | `destroy <name> --volume` | Also delete the home volume (asks for the name). |
 | `stop <name>` / `start <name>` | A stopped box costs only its volumes. |

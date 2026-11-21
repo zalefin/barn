@@ -5,6 +5,16 @@ minor release (0.x.0) may change the CLI or the files in `~/.config/barn/`;
 when it changes the files, barn migrates them automatically on first run
 (README: [Versions](README.md#versions)). Releases are git tags `vX.Y.Z`.
 
+## 0.7.0 (2026-11-06)
+
+- **`create --volume-gb GB`** sets a box's home volume size (default:
+  `volume_gb` in `config.toml`). Re-run `create` with a larger value to grow
+  an existing box's volume and filesystem in place. Volumes only grow: a
+  smaller value is refused, and `create` without the flag keeps a volume
+  that was grown past `volume_gb`. Before, `create` always applied
+  `volume_gb`, and failed if that was below a box's current size.
+- No config change and no migration; existing instances are not replaced.
+
 ## 0.6.0 (2026-11-03)
 
 - **Startup script.** What a box installs at first boot (apt packages,

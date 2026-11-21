@@ -175,6 +175,25 @@ def test_create_and_destroy_refuse_another_owners_box():
         cli.destroy(ctx, "alice-dev")
 
 
+def test_home_volume_size_grows_but_never_shrinks():
+    home = {**volume("zach-dev", "zach", size=300), "VolumeId": "vol-home"}
+    root = {**volume("zach-dev", "zach", size=8, device="/dev/sda1"), "VolumeId": "vol-root"}
+    ctx = FakeCtx(FakeEc2([], [root, home]))
+    ctx.settings.volume_gb = 100
+    vol = {"volume_id": "vol-home"}
+    # New box: --volume-gb, else volume_gb.
+    assert cli.home_volume_gb(ctx, "zach-dev", {}) == 100
+    assert cli.home_volume_gb(ctx, "zach-dev", {}, 500) == 500
+    # Existing box: keeps a size grown past volume_gb, grows to a larger volume_gb or --volume-gb.
+    assert cli.home_volume_gb(ctx, "zach-dev", vol) == 300
+    assert cli.home_volume_gb(ctx, "zach-dev", vol, 300) == 300
+    assert cli.home_volume_gb(ctx, "zach-dev", vol, 400) == 400
+    ctx.settings.volume_gb = 350
+    assert cli.home_volume_gb(ctx, "zach-dev", vol) == 350
+    with pytest.raises(ConfigError, match=r"--volume-gb 200 is less than zach-dev's home volume \(300 GB\)"):
+        cli.home_volume_gb(ctx, "zach-dev", vol, 200)
+
+
 def test_sync_refuses_another_owners_box():
     ctx = FakeCtx(FakeEc2([instance("alice-dev", "alice", "i-1")]))
     with pytest.raises(ConfigError, match="refusing to sync alice-dev: it is owned by alice; it would overwrite"):

@@ -47,12 +47,15 @@ def test_commands_parse(calls):
     run = CliRunner().invoke
     assert run(app, ["create", "zach-dev", "--size", "t3.micro", "-v"]).exit_code == 0
     assert run(app, ["create", "zach-dev", "--account", "work"]).exit_code == 0
+    assert run(app, ["create", "zach-dev", "--volume-gb", "250"]).exit_code == 0
+    assert run(app, ["create", "zach-dev", "--volume-gb", "0"]).exit_code != 0
     assert run(app, ["destroy", "zach-dev", "--volume"]).exit_code == 0
     assert run(app, ["destroy", "alice-dev", "--force", "--account", "work"]).exit_code == 0
     assert run(app, ["hold", "zach-dev", "8h"]).exit_code == 0
     assert calls == [
-        ("create", "ctx(True, None)", "zach-dev", "t3.micro"),
-        ("create", "ctx(False, work)", "zach-dev", None),
+        ("create", "ctx(True, None)", "zach-dev", "t3.micro", None),
+        ("create", "ctx(False, work)", "zach-dev", None, None),
+        ("create", "ctx(False, None)", "zach-dev", None, 250),
         ("destroy", "ctx(False, None)", "zach-dev", True, False),
         ("destroy", "ctx(False, work)", "alice-dev", False, True),
         ("hold", "ctx(False, None)", "zach-dev", "8h"),
