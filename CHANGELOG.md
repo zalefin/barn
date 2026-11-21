@@ -5,7 +5,7 @@ minor release (0.x.0) may change the CLI or the files in `~/.config/barn/`;
 when it changes the files, barn migrates them automatically on first run
 (README: [Versions](README.md#versions)). Releases are git tags `vX.Y.Z`.
 
-## 0.7.0 (2026-11-06)
+## 0.7.0 (2026-11-21)
 
 - **`create --volume-gb GB`** sets a box's home volume size (default:
   `volume_gb` in `config.toml`). Re-run `create` with a larger value to grow
