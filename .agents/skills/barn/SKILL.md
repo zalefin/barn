@@ -205,7 +205,9 @@ than its shell or an agent, or an active `hold`. After `idle_hours` with none
 of these it warns, then **stops** the box 15 minutes later (never terminates
 it). `barn start <name>` brings it back and herdr restores its layout. Before
 leaving unattended work that doesn't show as an active agent (a long build in a
-plain shell is fine; a detached background job is not), use `barn hold`.
+plain shell is fine; a detached background job is not), use `barn hold`. The
+same goes for long non-interactive transfers (`ssh <name> cmd`, scp, rsync):
+they have no tty and don't count as use.
 
 ## What survives what
 

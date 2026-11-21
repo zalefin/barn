@@ -46,6 +46,9 @@ done > "$IN/foreground.txt"
 # Signal 5: hold.
 cp "$HOME_DIR/.barn/hold-until" "$IN/hold-until" 2>/dev/null
 
+# Boot id: idle state from an earlier boot is discarded.
+cp /proc/sys/kernel/random/boot_id "$IN/boot-id" 2>/dev/null
+
 action=$(python3 "$LIB/idle_decide.py" "$IN" "$STATE/idle-state.json" "$IDLE_HOURS" "$(date +%s)")
 echo "idle-check: action=$action"
 case "$action" in

@@ -255,7 +255,9 @@ Every 5 minutes, a timer on the box checks whether it is in use:
 After `idle_hours` (default 4) with none of these, it broadcasts a 15-minute
 warning and then **stops** the box. It never terminates it, and the home volume
 is kept. If the herdr query fails, the box counts as in use. Run `start` to
-bring it back; herdr restores its layout.
+bring it back; herdr restores its layout, and the idle clock starts over.
+Non-interactive SSH (`ssh <name> cmd`, scp, rsync) does not count as use, so
+`hold` the box for a long transfer.
 
 ## What lives where
 

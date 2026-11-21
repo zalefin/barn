@@ -5,6 +5,20 @@ minor release (0.x.0) may change the CLI or the files in `~/.config/barn/`;
 when it changes the files, barn migrates them automatically on first run
 (README: [Versions](README.md#versions)). Releases are git tags `vX.Y.Z`.
 
+## 0.7.1 (2026-11-21)
+
+- **Fix: a box that had idle-stopped stopped again ~5 minutes after every
+  `start`.** The idle check's state (`/var/lib/barn/idle-state.json`) is on
+  the root volume, so it kept the last boot's idle clock and warning, and the
+  first check after boot shut the box down with no warning. The state now
+  records the boot id and starts over on each boot, so a started box gets the
+  full `idle_hours` and the 15-minute warning. A warning that was never
+  followed through is also given again rather than acted on.
+- The fix is in the box's bootstrap, so **existing instances are replaced on
+  their next `create`** (home volumes are kept). Until then, `barn hold <name>
+  <duration>` right after `start` keeps a box up. No config change and no
+  migration.
+
 ## 0.7.0 (2026-11-21)
 
 - **`create --volume-gb GB`** sets a box's home volume size (default:

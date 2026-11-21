@@ -10,10 +10,11 @@ spec.loader.exec_module(idle)
 
 H = 3600
 NOW = 1_000_000.0
+BOOT = "boot-1"
 
 
 def quiet():
-    return {"herdr_error": False, "panes": {}, "sessions": [], "foreground": [], "hold_until": 0}
+    return {"herdr_error": False, "panes": {}, "sessions": [], "foreground": [], "hold_until": 0, "boot_id": BOOT}
 
 
 def test_first_run_starts_the_clock():
@@ -23,7 +24,7 @@ def test_first_run_starts_the_clock():
 
 
 def test_idle_window_then_warn_then_shutdown():
-    state = {"last_active": NOW - 4 * H}
+    state = {"boot_id": BOOT, "last_active": NOW - 4 * H}
     action, _, state = idle.decide(NOW, quiet(), state, 4)
     assert action == "warn"
     action, _, state = idle.decide(NOW + 10 * 60, quiet(), state, 4)
@@ -33,15 +34,45 @@ def test_idle_window_then_warn_then_shutdown():
 
 
 def test_activity_after_warning_cancels_it():
-    state = {"last_active": NOW - 5 * H, "warned_at": NOW - 10 * 60}
+    state = {"boot_id": BOOT, "last_active": NOW - 5 * H, "warned_at": NOW - 10 * 60}
     inputs = quiet() | {"panes": {"w1:p1": "working"}}
     action, _, state = idle.decide(NOW, inputs, state, 4)
     assert action == "none" and state["warned_at"] is None and state["last_active"] == NOW
 
 
 def test_not_idle_long_enough():
-    action, _, _ = idle.decide(NOW, quiet(), {"last_active": NOW - 3 * H}, 4)
+    action, _, _ = idle.decide(NOW, quiet(), {"boot_id": BOOT, "last_active": NOW - 3 * H}, 4)
     assert action == "none"
+
+
+def test_state_from_an_earlier_boot_is_discarded():
+    # A box that idle-stopped and was started again: the old clock and the old
+    # warning must not shut it down on the first check after boot.
+    stale = {"boot_id": "boot-0", "last_active": NOW - 4 * 24 * H, "warned_at": NOW - 4 * H, "blocked_since": {"p": 0}}
+    action, _, state = idle.decide(NOW, quiet(), stale, 4)
+    assert action == "none"
+    assert state == {"boot_id": BOOT, "last_active": NOW, "warned_at": None, "blocked_since": {}}
+    # The new boot gets a full idle window, then the warning, then shutdown.
+    action, _, state = idle.decide(NOW + 4 * H, quiet(), state, 4)
+    assert action == "warn"
+    action, _, state = idle.decide(NOW + 4 * H + 15 * 60, quiet(), state, 4)
+    assert action == "shutdown"
+
+
+def test_state_without_boot_id_is_discarded():
+    # State written before barn recorded the boot id.
+    stale = {"last_active": NOW - 4 * 24 * H, "warned_at": NOW - 4 * H, "blocked_since": {}}
+    action, _, state = idle.decide(NOW, quiet(), stale, 4)
+    assert action == "none" and state["last_active"] == NOW and state["warned_at"] is None
+
+
+def test_stale_warning_is_given_again_not_acted_on():
+    # Same boot, but the warning is far older than one warning lead: warn again.
+    state = {"boot_id": BOOT, "last_active": NOW - 6 * H, "warned_at": NOW - 2 * H}
+    action, _, state = idle.decide(NOW, quiet(), state, 4)
+    assert action == "warn" and state["warned_at"] == NOW
+    action, _, state = idle.decide(NOW + 15 * 60, quiet(), state, 4)
+    assert action == "shutdown"
 
 
 def test_working_agent_is_active():
@@ -122,9 +153,11 @@ def test_gather_and_main(tmp_path):
     d.mkdir()
     (d / "herdr.rc").write_text("absent\n")
     (d / "hold-until").write_text(f"{int(NOW) + 100}\n")
+    (d / "boot-id").write_text("0f7e2c1a-boot\n")
     state = tmp_path / "state.json"
     assert idle.main(["x", str(d), str(state), "4", str(NOW)]) == 0
-    assert json.loads(state.read_text())["last_active"] == NOW
+    saved = json.loads(state.read_text())
+    assert saved["last_active"] == NOW and saved["boot_id"] == "0f7e2c1a-boot"
 
 
 def test_gather_herdr_failure(tmp_path):

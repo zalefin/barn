@@ -374,9 +374,15 @@ A root systemd timer runs every 5 minutes. The box is **active** if any holds:
 Not signals: CPU, running Docker containers, merely open sessions.
 
 After `idle_hours` (default 4) with no active check: `wall` a 15-minute warning,
-re-check, then `shutdown -h now` (instance stops; volume kept). **Fail safe:** if
-the herdr query errors, treat the box as active. The decision logic is a pure
-function with unit tests; the shell script only gathers inputs.
+re-check, then `shutdown -h now` (instance stops; volume kept). A warning
+older than 30 minutes (two warning leads) is given again, not acted on. **Fail
+safe:** if the herdr query errors, treat the box as active. The decision logic
+is a pure function with unit tests; the shell script only gathers inputs.
+
+The state (`/var/lib/barn/idle-state.json`: last active time, warning time,
+first-seen-blocked times) is on the root volume, which survives stop/start. It
+records the boot id (`/proc/sys/kernel/random/boot_id`), and state from another
+boot is discarded, so every boot starts a fresh idle window.
 
 ## 11. CLI (`barn`, installed with `uv tool install`)
 
@@ -1148,3 +1154,22 @@ User decision: `create` takes the home volume's size, per box.
   existing path (`ModifyVolume`, then `resize2fs` over SSH).
 - No config, layout, bootstrap or IAM change: no migration, and existing
   instances are not replaced.
+
+## 32. Idle state starts over on each boot (0.7.1, 2026-11-21)
+
+Bug: a box that had idle-stopped stopped again on the first idle check
+(5 minutes) after every `start`, with no warning, cutting off any SSH, scp or
+rsync. The idle state on the root volume survived the stop with an old
+`last_active` and an old `warned_at`, so `decide()` saw the idle window long
+past and a warning more than 15 minutes old, and returned `shutdown`.
+
+- `idle-check.sh` copies the boot id into the inputs; `decide()` discards
+  state whose boot id differs or is missing (state from 0.7.0 and earlier), so
+  `decide()` stays pure and the reset is unit-tested.
+- Defence in depth: a warning older than `WARN_STALE` (30 minutes) is given
+  again rather than acted on, so `shutdown` always follows a warning from the
+  last two warning leads.
+- Bootstrap change: existing instances are replaced on their next `create`.
+- Open question, not changed: non-interactive SSH sessions (`ssh host cmd`,
+  scp, rsync) have no tty and do not count as activity, so a transfer that
+  runs past `idle_hours` can still be cut off. `hold` covers it for now.

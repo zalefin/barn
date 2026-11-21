@@ -14,6 +14,9 @@ from pathlib import Path
 BLOCKED_GRACE = 24 * 3600  # a blocked agent keeps the box up this long
 SESSION_IDLE = 30 * 60  # a login session idle less than this keeps the box up
 WARN_LEAD = 15 * 60  # wall warning this long before shutdown
+# A warning older than this was not followed through (the timer did not run,
+# or the state is left over), so it is given again rather than acted on.
+WARN_STALE = 2 * WARN_LEAD
 
 # Foreground processes that are agents; their pane is judged by herdr's status
 # (signals 1 and 2), not by signal 4, or a blocked agent would never let go.
@@ -119,9 +122,19 @@ def active_reasons(now, inputs, state):
 
 
 def decide(now, inputs, state, idle_hours):
-    """Return (action, reasons, new_state). action is none, warn, or shutdown."""
+    """Return (action, reasons, new_state). action is none, warn, or shutdown.
+
+    The state file is on the root volume and survives stop/start. State from
+    an earlier boot (another boot id, or none recorded) is discarded, so a box
+    that idle-stopped gets a full idle window after `start`, not the old clock
+    and an old warning.
+    """
+    boot_id = inputs.get("boot_id", "")
+    if state.get("boot_id") != boot_id:
+        state = {}
     reasons, blocked_since = active_reasons(now, inputs, state)
     new = {
+        "boot_id": boot_id,
         "last_active": state.get("last_active", now),
         "warned_at": state.get("warned_at"),
         "blocked_since": blocked_since,
@@ -133,7 +146,7 @@ def decide(now, inputs, state, idle_hours):
 
     if now - new["last_active"] < idle_hours * 3600:
         return "none", reasons, new
-    if new["warned_at"] is None:
+    if new["warned_at"] is None or now - new["warned_at"] >= WARN_STALE:
         new["warned_at"] = now
         return "warn", reasons, new
     if now - new["warned_at"] >= WARN_LEAD:
@@ -164,6 +177,7 @@ def gather(input_dir):
     inputs["sessions"] = parse_sessions(read(d / "sessions.tsv"))
     inputs["foreground"] = parse_foreground(read(d / "foreground.txt"))
     inputs["hold_until"] = parse_hold(read(d / "hold-until"))
+    inputs["boot_id"] = read(d / "boot-id").strip()
     return inputs
 
 
